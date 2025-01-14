@@ -1,0 +1,230 @@
+# utils/dataset.py
+import os
+import json
+import random
+from PIL import Image
+
+import torch
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
+
+class ContrastiveFashionDataset(Dataset):
+    """
+    하나의 anchor(착용이미지)에 대해
+     - Positive(정답 in-shop) 1장
+     - Negative(같은 category, 다른 product code) N장
+    을 함께 반환
+    """
+    def __init__(
+        self,
+        root_dir,           
+        wearing_info_path,
+        is_train=True,
+        transform=None,
+        image_size=224,
+        negative_count=4    # 사용자 설정: 한 anchor당 negative 몇 장?
+    ):
+        super().__init__()
+        self.root_dir = root_dir
+        self.is_train = is_train
+        self.negative_count = negative_count
+
+        if transform is not None:
+            self.transform = transform
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ])
+
+        # 1) wearing_info.json 로드
+        with open(wearing_info_path, 'r', encoding='utf-8') as f:
+            self.wearing_list = json.load(f)
+
+        # 2) anchor_items: (anchor_img_path, product_code, category)
+        self.anchor_items = []
+        for info in self.wearing_list:
+            wearing_filename = info["wearing"]
+            base_name = os.path.splitext(wearing_filename)[0]
+
+            # 부위별 코드
+            hat_code = info.get("hat", None)
+            main_top_code = info.get("main_top", None)
+            inner_top_code = info.get("inner_top", None)
+            bottom_code = info.get("bottom", None)
+            shoes_code = info.get("shoes", None)
+
+            # hat
+            if hat_code:
+                seg_path = os.path.join(root_dir, "segmented_images", f"{base_name}_hat.png")
+                if os.path.exists(seg_path):
+                    self.anchor_items.append({
+                        "anchor_path": seg_path,
+                        "product_code": hat_code,
+                        "category": "hat"
+                    })
+            # main_top / inner_top (main_top 우선)
+            used_top_code = main_top_code if main_top_code else inner_top_code
+            used_top_class = "main_top" if main_top_code else ("inner_top" if inner_top_code else None)
+            if used_top_code and used_top_class:
+                seg_path = os.path.join(root_dir, "segmented_images", f"{base_name}_{used_top_class}.png")
+                if os.path.exists(seg_path):
+                    self.anchor_items.append({
+                        "anchor_path": seg_path,
+                        "product_code": used_top_code,
+                        "category": used_top_class
+                    })
+            # bottom
+            if bottom_code:
+                seg_path = os.path.join(root_dir, "segmented_images", f"{base_name}_bottom.png")
+                if os.path.exists(seg_path):
+                    self.anchor_items.append({
+                        "anchor_path": seg_path,
+                        "product_code": bottom_code,
+                        "category": "bottom"
+                    })
+            # shoes
+            if shoes_code:
+                seg_path = os.path.join(root_dir, "segmented_images", f"{base_name}_shoes.png")
+                if os.path.exists(seg_path):
+                    self.anchor_items.append({
+                        "anchor_path": seg_path,
+                        "product_code": shoes_code,
+                        "category": "shoes"
+                    })
+
+        # 3) in-shop 이미지 구조화
+        self.product_dict = {}  # product_dict[code] = [img_path, ...]
+        self.category_map = {}  # category_map[cat][code] = [img_path, ...] (카테고리별 분리)
+
+        product_root = os.path.join(root_dir, "product_images")
+        for code_folder in os.listdir(product_root):
+            sub_path = os.path.join(product_root, code_folder)
+            if os.path.isdir(sub_path):
+                imgs = []
+                for fname in os.listdir(sub_path):
+                    if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        full_path = os.path.join(sub_path, fname)
+                        imgs.append(full_path)
+                if imgs:
+                    self.product_dict[code_folder] = imgs
+
+        # 카테고리별로 정리하기 위해 anchor_items에 나타난 cat, code에 대한 mapping
+        # (단, 실제 product_images에도 code가 있어야 의미가 있음)
+        for item in self.anchor_items:
+            cat = item["category"]
+            code = item["product_code"]
+            if code not in self.product_dict:
+                continue
+            if cat not in self.category_map:
+                self.category_map[cat] = {}
+            if code not in self.category_map[cat]:
+                self.category_map[cat][code] = self.product_dict[code]
+
+    def __len__(self):
+        return len(self.anchor_items)
+
+    def __getitem__(self, index):
+        """
+        반환:
+          anchor_img, 
+          [pos_img, neg_1, neg_2, ..., neg_n],
+          [1, 0, 0, ..., 0]
+        """
+        anchor_info = self.anchor_items[index]
+        anchor_path = anchor_info["anchor_path"]
+        anchor_code = anchor_info["product_code"]
+        category = anchor_info["category"]
+
+        # anchor 이미지 로드
+        anchor_img = self._load_image(anchor_path)
+        if anchor_img is None:
+            # 가로>세로 이미지면 스킵: 다른 idx 재시도
+            return self.__getitem__(random.randint(0, len(self)-1))
+
+        # Positive 이미지 1장 (anchor_code의 in-shop 중 하나)
+        if anchor_code in self.product_dict:
+            pos_path = random.choice(self.product_dict[anchor_code])
+            pos_img = self._load_image(pos_path)
+            if pos_img is None:
+                # pos_img가 가로>세로면 또 재시도
+                return self.__getitem__(random.randint(0, len(self)-1))
+        else:
+            # anchor_code에 해당하는 in-shop이 없으면, 사실상 Positive가 없음 -> fallback
+            return self.__getitem__(random.randint(0, len(self)-1))
+
+        # Negative 이미지 N장 (같은 category, 다른 code)
+        neg_imgs = []
+        if (category in self.category_map) and (len(self.category_map[category]) > 1):
+            # 현재 code가 아닌 다른 code들
+            diff_codes = [c for c in self.category_map[category].keys() if c != anchor_code]
+            if not diff_codes:
+                # 다른 code가 없으면 fallback
+                return self.__getitem__(random.randint(0, len(self)-1))
+
+            for _ in range(self.negative_count):
+                neg_code = random.choice(diff_codes)
+                neg_path = random.choice(self.category_map[category][neg_code])
+                neg_img = self._load_image(neg_path)
+                if neg_img is None:
+                    # 만약 가로>세로라면 다시 시도
+                    return self.__getitem__(random.randint(0, len(self)-1))
+                neg_imgs.append(neg_img)
+        else:
+            # category_map[cat]이 1개 code뿐이거나, cat 자체가 없는 경우
+            return self.__getitem__(random.randint(0, len(self)-1))
+
+        # 최종 candidate 리스트 & 레이블
+        candidate_list = [pos_img] + neg_imgs  # 길이: 1 + N
+        label_list = [1] + [0]*self.negative_count
+
+        # transform 적용
+        if self.transform:
+            anchor_img = self.transform(anchor_img)
+            for i in range(len(candidate_list)):
+                candidate_list[i] = self.transform(candidate_list[i])
+
+        return anchor_img, candidate_list, torch.tensor(label_list, dtype=torch.float)
+
+    def _load_image(self, path):
+        img = Image.open(path).convert('RGB')
+        # 가로가 세로보다 긴 이미지면 None
+        if img.width > img.height:
+            return None
+        return img
+
+
+def collate_fn_contrastive(batch):
+    """
+    batch: list of tuples:
+      (anchor_img, [cand_img1, cand_img2, ...], [label1, label2, ...])
+    각 anchor에 대해 (N+1)개의 candidate가 있음.
+    => 이를 하나의 큰 텐서로 펼쳐서 반환
+       anchors : (batch*(N+1), C, H, W)
+       cands   : (batch*(N+1), C, H, W)
+       labels  : (batch*(N+1))
+    """
+    anchor_list = []
+    candidate_list = []
+    label_list = []
+
+    for (anchor_img, cand_imgs, labels) in batch:
+        # anchor_img shape: (C,H,W)
+        # cand_imgs shape: list of length (N+1)
+        # labels shape: (N+1,)
+
+        # anchor를 (N+1)번 반복
+        for i in range(len(cand_imgs)):
+            anchor_list.append(anchor_img)  # 동일 anchor
+            candidate_list.append(cand_imgs[i])
+            label_list.append(labels[i])
+
+    anchors = torch.stack(anchor_list, dim=0)
+    candidates = torch.stack(candidate_list, dim=0)
+    labels = torch.stack(label_list, dim=0)
+
+    return anchors, candidates, labels

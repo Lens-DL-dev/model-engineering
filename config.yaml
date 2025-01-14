@@ -1,0 +1,24 @@
+data:
+  root: "./data"
+
+training:
+  epochs: 10
+  batch_size: 16          # => 한 번에 anchor 8개
+  learning_rate: 0.0001
+  num_workers: 8
+  gradient_accumulation_steps: 1
+  save_dir: "./checkpoints"
+  early_stopping_patience: 3
+
+model:
+  checkpoint: "./checkpoints/last_ckpt.pth.tar"
+  resume: false
+  image_size: 224
+  embed_dim: 512
+
+loss:
+  margin: 1.0
+  distance_metric: "euclidean"
+
+dataset:
+  negative_count: 4      # 한 anchor당 negative 4장
