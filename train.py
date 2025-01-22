@@ -12,7 +12,7 @@ from utils.config import load_config
 from utils.dataset import ContrastiveFashionDataset, collate_fn_contrastive
 from utils.losses import ContrastiveLoss
 from utils.metrics import calculate_accuracy_contrastive
-from utils.visualization import save_contrastive_matrix, save_topk_image_samples
+from utils.visualization import save_contrastive_matrix, save_topk_image_samples_with_mask
 from models.efficientnet_v2 import EfficientNetV2L
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
@@ -78,20 +78,22 @@ def main():
     val_dir = os.path.join(data_root, 'val')
 
     negative_count = config['dataset'].get('negative_count', 4)
-
+    n_mask_channels = config['dataset'].get('n_mask_channels', 1)
     train_dataset = ContrastiveFashionDataset(
         root_dir=train_dir,
         wearing_info_path=os.path.join(train_dir, 'wearing_info.json'),
         is_train=True,
         image_size=image_size,
-        negative_count=negative_count
+        negative_count=negative_count,
+        n_mask_channels=n_mask_channels
     )
     val_dataset = ContrastiveFashionDataset(
-        root_dir=val_dir,
-        wearing_info_path=os.path.join(val_dir, 'wearing_info.json'),
+        root_dir=train_dir,
+        wearing_info_path=os.path.join(train_dir, 'wearing_info.json'), # WARNING: validation 용 wearing images와 mask images가 없어 임시로 train_dir 넣어둠 ; 250122_wsj
         is_train=False,
         image_size=image_size,
-        negative_count=negative_count
+        negative_count=negative_count,
+        n_mask_channels=n_mask_channels
     )
 
     train_loader = DataLoader(
@@ -211,12 +213,12 @@ def main():
                     margin=margin
                 )
                 # 2) top-k 이미지 samples
-                save_topk_image_samples(
+                save_topk_image_samples_with_mask(
                     anchors, candidates,
                     emb_anchor, emb_candidate,
                     k=3,
                     distance_metric=distance_metric,
-                    out_dir=vis_dir
+                    out_dir=vis_dir,
                 )
 
         epoch_loss = running_loss / len(train_loader)

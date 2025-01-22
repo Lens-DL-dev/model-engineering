@@ -69,8 +69,8 @@ def save_topk_image_samples(
 
     sorted_indices = torch.argsort(dist)  # 오름차순 (가까운 순)
 
-    anchor_cpu = anchor_imgs.cpu()
-    candidate_cpu = candidate_imgs.cpu()
+    anchor_cpu = anchor_imgs.cpu()[:,:3,:,:] # 250122_wsj Mask 채널 제거
+    candidate_cpu = candidate_imgs.cpu()[:,:3,:,:] # 250122_wsj Mask 채널 제거
     dist_cpu = dist.detach().cpu().numpy()
 
     for rank in range(min(k, anchor_cpu.size(0))):
@@ -80,6 +80,47 @@ def save_topk_image_samples(
         d_val = dist_cpu[idx]
 
         grid = torchvision.utils.make_grid([a_img, c_img], nrow=2, padding=5, normalize=True)
+        # to PIL
+        pil_img = torchvision.transforms.ToPILImage()(grid)
+        out_name = f"top_{rank+1}_dist_{d_val:.3f}.jpg"
+        pil_img.save(os.path.join(out_dir, out_name))
+
+
+def save_topk_image_samples_with_mask(
+    anchor_imgs, candidate_imgs, emb_anchor, emb_candidate, 
+    k=3, distance_metric='euclidean', out_dir="vis_samples"
+):
+    """
+    anchor_imgs, candidate_imgs: (B, C, H, W)
+    emb_anchor, emb_candidate: (B, dim)
+    => 거리 기준으로 가장 가까운 상위 k개 샘플을 이미지로 시각화
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    if distance_metric == 'euclidean':
+        dist = F.pairwise_distance(emb_anchor, emb_candidate, p=2)
+    else:
+        dist = 1.0 - F.cosine_similarity(emb_anchor, emb_candidate, dim=1)
+
+    sorted_indices = torch.argsort(dist)  # 오름차순 (가까운 순)
+
+    anchor_cpu = anchor_imgs.cpu()
+    anchor_image = anchor_cpu[:,:3,:,:]
+    anchor_mask = anchor_cpu[:,3,:,:]
+    candidate_cpu = candidate_imgs.cpu()
+    candidate_image = candidate_cpu[:,:3,:,:]
+    candidate_mask = candidate_cpu[:,3,:,:]
+    dist_cpu = dist.detach().cpu().numpy()
+
+    for rank in range(min(k, anchor_cpu.size(0))):
+        idx = sorted_indices[rank].item()
+        a_img = anchor_image[idx]
+        a_mask = anchor_mask[idx][None, :, :].repeat(3, 1, 1)
+        c_img = candidate_image[idx]
+        c_mask = candidate_mask[idx][None, :, :].repeat(3, 1, 1)
+        d_val = dist_cpu[idx]
+
+        grid = torchvision.utils.make_grid([a_img, c_img, a_mask, c_mask], nrow=2, padding=5, normalize=True)
         # to PIL
         pil_img = torchvision.transforms.ToPILImage()(grid)
         out_name = f"top_{rank+1}_dist_{d_val:.3f}.jpg"

@@ -197,7 +197,7 @@ if __name__ == '__main__':
     wearing_info_dict = load_wearing_info(wearing_info_path)
 
     print("Starting image processing...")
-    tmp_dir = "./unzipped/train/wearing_images"
+    tmp_dir = "./data/train/wearing_images"
     image_paths = [
         os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir)
         if f.lower().endswith(('.png', '.jpg', '.jpeg'))

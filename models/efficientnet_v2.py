@@ -8,14 +8,14 @@ class EfficientNetV2L(nn.Module):
     tf_efficientnetv2_l.in21k -> backbone_out = 1280 (고정)
     Contrastive Learning을 위한 임베딩 레이어 포함
     """
-    def __init__(self, pretrained=True, embed_dim=512):
+    def __init__(self, pretrained=True, embed_dim=512, in_channels=4):
         super().__init__()
         # 1) 모델 생성
         self.backbone = timm.create_model(
             "tf_efficientnetv2_l.in21k",
             pretrained=pretrained,
             num_classes=0,  # 최종 FC 제거
-            in_chans=3
+            in_chans=in_channels # 250120_kdi 기존 3채널 + Segmentation 마스크 채널
         )
         # 2) num_features = 1280 고정 가정
         backbone_out = 1280  # 혹은 self.backbone.num_features 로 확인해도 무방
