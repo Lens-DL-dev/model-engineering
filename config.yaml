@@ -1,25 +1,31 @@
 data:
-  root: "./data"
+  train_dir: "/home/ubuntu/dev/dataset/main"
+  train_metainfo_path: /home/ubuntu/dev/dataset/main/train_metainfo.json
+  val_dir: "/home/ubuntu/dev/dataset/main"
+  val_metainfo_path: /home/ubuntu/dev/dataset/main/val_metainfo.json
+  negative_count: 13
+  
+  n_mask_channels: 0
 
 training:
-  epochs: 10
-  batch_size: 8          # => 한 번에 anchor 8개
+  epochs: 20
+  batch_size: 32          # => 한 번에 anchor 8개
   learning_rate: 0.0001
   num_workers: 8
   gradient_accumulation_steps: 1
   save_dir: "./checkpoints"
+  vis_dir: "./vis_results"
   early_stopping_patience: 3
 
 model:
+  pretrained_model_name: "openai/clip-vit-base-patch32"
   checkpoint: "./checkpoints/last_ckpt.pth.tar"
   resume: false
   image_size: 224
-  embed_dim: 512
+  in_channels: 3
 
 loss:
   margin: 1.0
   distance_metric: "euclidean"
 
-dataset:
-  negative_count: 4      # 한 anchor당 negative 4장
-  n_mask_channels: 1
+use_wandb: True

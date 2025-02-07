@@ -1,7 +1,34 @@
 # models/efficientnet_v2.py
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 import timm
+
+class EmbeddingHead(nn.Module):
+    def __init__(self, backbone_out, embed_dim):
+        super().__init__()
+        self.embedding_head = nn.Sequential(
+            nn.Linear(backbone_out, embed_dim),
+            nn.BatchNorm1d(embed_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim, embed_dim),
+            nn.LayerNorm(embed_dim)
+        )
+        self._initialize_weights()  # 추가된 초기화 함수
+
+    def _initialize_weights(self):
+        # Kaiming He Initialization
+        for m in self.embedding_head.modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                init.ones_(m.weight)
+                init.zeros_(m.bias)
+    
+    def forward(self, x):
+        return self.embedding_head(x)
 
 class EfficientNetV2L(nn.Module):
     """
@@ -18,7 +45,7 @@ class EfficientNetV2L(nn.Module):
             in_chans=in_channels # 250120_kdi 기존 3채널 + Segmentation 마스크 채널
         )
         # 2) num_features = 1280 고정 가정
-        backbone_out = 1280  # 혹은 self.backbone.num_features 로 확인해도 무방
+        backbone_out = self.backbone.num_features  # 혹은 self.backbone.num_features 로 확인해도 무방
         
         # (선택) gradient checkpointing 적용:
         # if hasattr(self.backbone, 'blocks'):
@@ -31,13 +58,7 @@ class EfficientNetV2L(nn.Module):
         #     self.backbone.blocks = blocks_with_checkpoint
 
         # 3) 임베딩 레이어
-        self.embedding_head = nn.Sequential(
-            nn.Linear(backbone_out, embed_dim),
-            nn.BatchNorm1d(embed_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dim, embed_dim),
-            nn.BatchNorm1d(embed_dim),
-        )
+        self.embedding_head = EmbeddingHead(backbone_out, embed_dim)
 
     def forward(self, x):
         features = self.backbone(x)         # [B, 1280]

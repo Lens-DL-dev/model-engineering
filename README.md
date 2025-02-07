@@ -6,8 +6,7 @@
 
 -   **[1차 처리] 이미지 임베딩**
 
-    -   EfficientNetV2-L 모델로 착용 이미지를 임베딩화
-    -   모델 정의는 `models/efficientnet.py` 파일 참고
+    -   openai/clip-vit-base-patch32 기반 모델로 착용 이미지를 임베딩화
 
 -   **[2차 처리] 벡터화 및 검색**
     -   FAISS를 활용하여 미리 벡터화된 판매 이미지 DB에서 가장 유사한 제품을 검색
@@ -83,75 +82,6 @@ python train.py --config config.yaml
 └── requirements.txt
 ```
 
-## `labels/` 내 json 파일 형식
-
-```json
-{
-    "file_name": "0928015_F.jpg",
-    "region1": {
-        "category_id": 4,
-        "view_point": 0,
-        "product_type": "torso",
-        "segmentation": [
-            [
-                [
-                    453.4315296082437,
-                    477.68953290850226
-                ],
-                ...
-            ]
-        ]
-    },
-    "region2": {
-        "category_id": 2,
-        "view_point": 0,
-        "product_type": "rsleeve",
-        "segmentation": [
-            [
-                [
-                    322.1356695326696,
-                    471.3710705470719
-                ],
-                ...
-            ]
-        ]
-    },
-    "region3": {
-        "category_id": 3,
-        "view_point": 0,
-        "product_type": "lsleeve",
-        "segmentation": [
-            [
-                [
-                    455.39872345596046,
-                    591.6505371348516
-                ],
-                ...
-            ]
-        ]
-    },
-    "region4": {
-        "category_id": 5,
-        "view_point": 0,
-        "product_type": "top_hidden",
-        "segmentation": [
-            [
-                [
-                    413.15060280447665,
-                    457.33113956456174
-                ],
-                ...
-            ]
-        ]
-    },
-    "image_size": {
-        "width": 720,
-        "height": 1280
-    },
-    "category_id": 2,
-    "category_name": "tops"
-}
-```
 
 ## `wearing_info.json` 파일 형식
 

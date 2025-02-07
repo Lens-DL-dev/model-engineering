@@ -17,6 +17,7 @@ masked
 meta
 unzipped
 vis_results
+wandb/
 
 segmented
 results
