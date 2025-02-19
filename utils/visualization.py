@@ -17,7 +17,6 @@ def save_contrastive_matrix(
     Positive(blue circle), Negative(red x)
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
     if distance_metric == 'euclidean':
         dist = F.pairwise_distance(emb_anchor, emb_candidate, p=2)
     else:

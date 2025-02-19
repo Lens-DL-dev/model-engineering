@@ -1,6 +1,6 @@
 import os
 import argparse
-import datetime
+from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -143,7 +143,7 @@ def main():
     # -----------------------------
     # 4. Model
     # -----------------------------
-    #model = EfficientNetV2L(pretrained=True, embed_dim=embed_dim, in_channels=in_channels).to(device)
+    #model = EfficientNetV2L(pretrained=True).to(device)
     model = CLIPVisionModel.from_pretrained(pretrained_model_name).to(device)
     ema = ModelEmaV2(model, decay=0.999)# add EMA
     # -----------------------------
@@ -225,9 +225,9 @@ def main():
                 wandb.log({"train/loss": current_loss, "step": global_step, "epoch": epoch + 1})
             
             # -----------------------------
-            # (NEW) 300번째 배치마다 시각화
+            # (NEW) 100번째 배치마다 시각화
             # -----------------------------
-            if (i % 300 == 0) and (i > 0):
+            if (i % 100 == 0) and (i > 0):
                 current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
                 os.makedirs(current_vis_dir, exist_ok=True)
 

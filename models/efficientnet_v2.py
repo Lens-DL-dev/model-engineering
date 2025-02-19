@@ -9,12 +9,12 @@ class EmbeddingHead(nn.Module):
         super().__init__()
         self.embedding_head = nn.Sequential(
             nn.Linear(backbone_out, embed_dim),
-            nn.BatchNorm1d(embed_dim),
+            nn.LayerNorm(embed_dim),
             nn.ReLU(inplace=True),
             nn.Linear(embed_dim, embed_dim),
             nn.LayerNorm(embed_dim)
         )
-        self._initialize_weights()  # 추가된 초기화 함수
+        self._initialize_weights() 
 
     def _initialize_weights(self):
         # Kaiming He Initialization
@@ -35,7 +35,7 @@ class EfficientNetV2L(nn.Module):
     tf_efficientnetv2_l.in21k -> backbone_out = 1280 (고정)
     Contrastive Learning을 위한 임베딩 레이어 포함
     """
-    def __init__(self, pretrained=True, embed_dim=512, in_channels=4):
+    def __init__(self, pretrained=True, embed_dim=512, in_channels=3):
         super().__init__()
         # 1) 모델 생성
         self.backbone = timm.create_model(
@@ -64,3 +64,4 @@ class EfficientNetV2L(nn.Module):
         features = self.backbone(x)         # [B, 1280]
         embeddings = self.embedding_head(features)  # [B, embed_dim]
         return embeddings
+       
