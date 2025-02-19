@@ -1,31 +1,31 @@
 data:
   train_dir: "/home/ubuntu/dev/dataset/main"
-  train_metainfo_path: /home/ubuntu/dev/dataset/main/train_metainfo.json
+  train_metainfo_path: "/home/ubuntu/dev/dataset/main/train_metainfo.json"
   val_dir: "/home/ubuntu/dev/dataset/main"
-  val_metainfo_path: /home/ubuntu/dev/dataset/main/val_metainfo.json
-  negative_count: 13
-  
+  val_metainfo_path: "/home/ubuntu/dev/dataset/main/val_metainfo.json"
   n_mask_channels: 0
 
 training:
   epochs: 20
-  batch_size: 32          # => 한 번에 anchor 8개
+  batch_size: 64            # SimCLR/MoCo에서는 큰 배치가 유리함 (384×384 기준)
   learning_rate: 0.0001
-  num_workers: 8
+  num_workers: 1
   gradient_accumulation_steps: 1
   save_dir: "./checkpoints"
   vis_dir: "./vis_results"
   early_stopping_patience: 3
 
 model:
-  pretrained_model_name: "openai/clip-vit-base-patch32"
-  checkpoint: "./checkpoints/last_ckpt.pth.tar"
+  method: "simclr"          # Options: "simclr" or "moco"
+  backbone: "convnext_tiny" # torchvision backbone (pretrained)
+  pretrained: true
+  embed_dim: 256
+  checkpoint: ""
   resume: false
-  image_size: 224
+  image_size: 384           # 이미지 해상도 (384×384 추천)
   in_channels: 3
 
 loss:
-  margin: 1.0
-  distance_metric: "euclidean"
+  temperature: 0.07         # 온도 하이퍼파라미터 (SimCLR, MoCo 공용)
 
-use_wandb: True
+use_wandb: False

@@ -5,20 +5,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.amp import GradScaler, autocast  # 수정됨
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 import wandb
-from transformers import CLIPVisionModel
-from timm.utils import ModelEmaV2
 
-
-# 내부 모듈
 from utils.config import load_config
-from utils.dataset import ContrastiveFashionDataset, collate_fn_contrastive
-from utils.losses import ContrastiveLoss
-from utils.metrics import calculate_tp_fp_tn_fn, compute_f1_score
-from utils.visualization import save_contrastive_matrix, save_topk_image_samples, save_topk_image_samples_with_mask
-from models.efficientnet_v2 import EfficientNetV2L
+from utils.dataset import ContrastiveFashionDataset
+from utils.losses import NTXentLoss, InfoNCELoss
+from utils.visualization import save_visualization
+
+# Import model classes
+from models.simclr_model import SimCLRModel
+from models.moco_model import MoCoModel
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
@@ -34,354 +32,199 @@ def load_checkpoint(model, optimizer, filename):
     else:
         print(f"=> No checkpoint found at '{filename}'. Training from scratch.")
         return 0
-    
-def update_ema(ema, model):
-    if ema is not None:
-        ema.update(model)
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='config.yaml', type=str)
     args = parser.parse_args()
-
+    
+    
     # -----------------------------
     # 1. Load Config
     # -----------------------------
+
     config = load_config(args.config)
-    use_wandb = config['use_wandb']
+    use_wandb = config.get('use_wandb', False)
     if use_wandb:
-        wandb.init(
-            project="dev-lens",
-            config=config
-        )
+        wandb.init(project="fashion-contrast", config=config)
         run_name = wandb.run.name
     else:
         run_name = datetime.now().strftime("%m%d%H%M%S")
+    
     epochs = config['training']['epochs']
     batch_size = config['training']['batch_size']
     lr = config['training']['learning_rate']
     num_workers = config['training']['num_workers']
-    margin = config['loss'].get('margin', 1.0)
-    distance_metric = config['loss'].get('distance_metric', 'euclidean')
-    save_dir = config['training'].get('save_dir', './checkpoints')
-    save_dir = os.path.join(save_dir, run_name)
-    os.makedirs(save_dir, exist_ok=True)
-    vis_dir = config['training'].get('vis_dir', './vis_results')
-    vis_dir = os.path.join(vis_dir, run_name)
-    os.makedirs(vis_dir, exist_ok=True)
-
     grad_acc_steps = config['training'].get('gradient_accumulation_steps', 1)
-
-    # early stopping
-    patience = config['training'].get('early_stopping_patience', 5)
-    best_val_acc = 0.0
-    epochs_no_improve = 0
-
+    
     # checkpoint
-    pretrained_model_name = config['model']['pretrained_model_name']
-    checkpoint_path = config['model']['checkpoint']  
-    resume = config['model'].get('resume', False)
-    image_size = config['model'].get('image_size', 224)
-    #embed_dim = config['model'].get('embed_dim', 512)
-    in_channels = config['model'].get('in_channels', 3)
-
-
+    save_dir = os.path.join(config['training'].get('save_dir', './checkpoints'), run_name)
+    os.makedirs(save_dir, exist_ok=True)
+    
     # -----------------------------
     # 2. Device
     # -----------------------------
-    if not torch.cuda.is_available():
-        print("No CUDA device found. Exiting.")
-        return
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     torch.backends.cudnn.benchmark = True
 
     # -----------------------------
     # 3. Dataset / Dataloader
     # -----------------------------
+
     train_dir = config['data']['train_dir']
+    train_metainfo = config['data']['train_metainfo_path']
     val_dir = config['data']['val_dir']
-
-    negative_count = config['data'].get('negative_count', 4)
+    val_metainfo = config['data']['val_metainfo_path']
+    
+    image_size = config['model'].get('image_size', 384)
     n_mask_channels = config['data'].get('n_mask_channels', 0)
-    train_metainfo_path =  config['data'].get('train_metainfo_path', os.path.join(train_dir, 'metainfo.json'))
-    val_metainfo_path =  config['data'].get('val_metainfo_path', os.path.join(val_dir, 'metainfo.json'))
-    assert n_mask_channels + 3 == in_channels, f'in_channels == {in_channels}, But n_mask_channels == {n_mask_channels}. 모델의 입력 채널은 3(RGB) + N(mask)여야함!'
-    train_dataset = ContrastiveFashionDataset(
-        root_dir=train_dir,
-        metainfo_path=train_metainfo_path,
-        is_train=True,
-        image_size=image_size,
-        negative_count=negative_count,
-        n_mask_channels=n_mask_channels
-    )
-    val_dataset = ContrastiveFashionDataset(
-        root_dir=val_dir,
-        metainfo_path=val_metainfo_path,
-        is_train=False,
-        image_size=image_size,
-        negative_count=negative_count,
-        n_mask_channels=n_mask_channels
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,   
-        shuffle=True,
-        num_workers=num_workers,
-        drop_last=True,
-        collate_fn=collate_fn_contrastive
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        drop_last=False,
-        collate_fn=collate_fn_contrastive
-    )
-
+    
+    train_dataset = ContrastiveFashionDataset(root_dir=train_dir,
+                                               metainfo_path=train_metainfo,
+                                               is_train=True,
+                                               image_size=image_size,
+                                               n_mask_channels=n_mask_channels)
+    val_dataset = ContrastiveFashionDataset(root_dir=val_dir,
+                                             metainfo_path=val_metainfo,
+                                             is_train=False,
+                                             image_size=image_size,
+                                             n_mask_channels=n_mask_channels)
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                            num_workers=num_workers, drop_last=False)
+    
     # -----------------------------
-    # 4. Model
+    # 4. Model / Loss / Optimizer
     # -----------------------------
-    #model = EfficientNetV2L(pretrained=True).to(device)
-    model = CLIPVisionModel.from_pretrained(pretrained_model_name).to(device)
-    ema = ModelEmaV2(model, decay=0.999)# add EMA
-    # -----------------------------
-    # 5. Loss & Optimizer
-    # -----------------------------
-    criterion = ContrastiveLoss(margin=margin, distance_metric=distance_metric)
+    method = config['model'].get('method', 'simclr').lower()
+    embed_dim = config['model'].get('embed_dim', 256)
+    backbone = config['model'].get('backbone', 'convnext_tiny')
+    pretrained = config['model'].get('pretrained', True)
+    
+    if method == 'simclr':
+        model = SimCLRModel(backbone=backbone, pretrained=pretrained, embed_dim=embed_dim)
+        criterion = NTXentLoss(temperature=config['loss'].get('temperature', 0.07))
+    elif method == 'moco':
+        model = MoCoModel(backbone=backbone, pretrained=pretrained, embed_dim=embed_dim,
+                          temperature=config['loss'].get('temperature', 0.07))
+        criterion = InfoNCELoss()
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    model = model.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
-
-    # AMP -> Fix the future warning
-    #   "torch.cuda.amp.GradScaler(args...) is deprecated. Please use torch.amp.GradScaler('cuda', args...) instead."
-    scaler = torch.cuda.amp.GradScaler()
-
+    scaler = GradScaler()
+    
     # -----------------------------
-    # 6. (Optional) Resume Checkpoint
+    # 5. (Optional) Resume Checkpoint
     # -----------------------------
+    checkpoint_path = config['model'].get('checkpoint', "")
+    resume = config['model'].get('resume', False)
     start_epoch = 0
     if resume and checkpoint_path:
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
+    
+    best_val_top1 = 0.0
+    epochs_no_improve = 0
 
-    # -----------------------------
-    # 7. Training Loop
-    # -----------------------------
     print("===== Training Start =====")
     global_step = 0
-
-    for epoch in range(0, epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         running_loss = 0.0
-        
-        # (개선) 에폭 전체 정확도 계산 위해
-        epoch_tp = 0
-        epoch_tn = 0
-        epoch_fp = 0
-        epoch_fn = 0
-
         pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}")
-        for i, (anchors, candidates, labels) in pbar:
-            global_step += anchors.shape[0]
-
-            anchors = anchors.to(device, non_blocking=True)
-            candidates = candidates.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-
-            # AMP
-            with autocast(device_type='cuda', dtype=torch.float16):
-                emb_anchor = model(anchors)[1]
-                emb_candidate = model(candidates)[1]
-                loss = criterion(emb_anchor, emb_candidate, labels)
-                loss = loss / grad_acc_steps
-
-            scaler.scale(loss).backward()
-
-            if (i + 1) % grad_acc_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-                update_ema(ema, model)    
-
-            current_loss = loss.item() * grad_acc_steps
-            running_loss += current_loss
-
-            # (개선) 배치 내 correct/total
-            with torch.no_grad():
-                # 배치별 Accuracy
-                tp, fp, tn, fn = calculate_tp_fp_tn_fn(
-                    emb_anchor, emb_candidate, labels,
-                    threshold=margin,
-                    distance_metric=distance_metric
-                )
-                epoch_tp += tp
-                epoch_fp += fp
-                epoch_tn += tn
-                epoch_fn += fn
-
-            pbar.set_postfix({
-                "loss": f"{current_loss:.4f}",
-            })
-            if use_wandb:
-                wandb.log({"train/loss": current_loss, "step": global_step, "epoch": epoch + 1})
+        for i, (wearing_img, product_img) in pbar:
+            global_step += 1
+            wearing_img = wearing_img.to(device, non_blocking=True)
+            product_img = product_img.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
             
-            # -----------------------------
-            # (NEW) 100번째 배치마다 시각화
-            # -----------------------------
-            if (i % 100 == 0) and (i > 0):
-                current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
-                os.makedirs(current_vis_dir, exist_ok=True)
-
-                # 1) Contrastive Distance Plot
-                save_contrastive_matrix(
-                    emb_anchor, emb_candidate, labels,
-                    save_path=os.path.join(current_vis_dir, "dist_plot.png"),
-                    distance_metric=distance_metric,
-                    margin=margin
-                )
-                # 2) top-k 이미지 samples
-                if n_mask_channels == 0:
-                    save_topk_image_samples(
-                    anchors, candidates,
-                    emb_anchor, emb_candidate,
-                    k=3,
-                    distance_metric=distance_metric,
-                    out_dir=current_vis_dir,
-                )
-                elif n_mask_channels == 1:
-                    save_topk_image_samples_with_mask(
-                        anchors, candidates,
-                        emb_anchor, emb_candidate,
-                        k=3,
-                        distance_metric=distance_metric,
-                        out_dir=current_vis_dir,
-                    )
-                else:
-                    raise NotImplementedError
-
-        epoch_loss = running_loss / len(train_loader)
-        epoch_acc = ((epoch_tp+epoch_tn) / (epoch_tp+epoch_tn+epoch_fp+epoch_fn)) * 100.0
-        epoch_f1 = compute_f1_score(epoch_tp, epoch_fp, epoch_tn, epoch_fn)
-        print(f"[Train] Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.2f}%, F1: {epoch_f1:.4f}")
-        if use_wandb:
-            wandb.log({"train/Avg loss": current_loss, "train/Avg acc": epoch_acc, "train/Avg f1": epoch_f1, "epoch": epoch + 1})
+            with autocast(device_type='cuda', dtype=torch.float16):
+                if method == 'simclr':
+                    emb_wearing = model(wearing_img)
+                    emb_product = model(product_img)
+                    loss = criterion(emb_wearing, emb_product)
+                elif method == 'moco':
+                    # MoCo: query=wearing, key=product
+                    logits, labels = model(wearing_img, product_img)
+                    loss = criterion(logits, labels)
+            loss = loss / grad_acc_steps
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            running_loss += loss.item() * grad_acc_steps
+            
+            pbar.set_postfix({"loss": f"{loss.item() * grad_acc_steps:.4f}"})
+            if use_wandb:
+                wandb.log({"train/loss": loss.item() * grad_acc_steps,
+                           "step": global_step,
+                           "epoch": epoch+1})
+            
+            # 100번째 배치마다 visualization (예: 샘플 이미지와 임베딩 분포)
+            if (i + 1) % 100 == 0:
+                vis_path = os.path.join(vis_dir, f"epoch_{epoch+1}_batch_{i+1}.png")
+                # save_visualization 함수는 (wearing_img, product_img, loss, 임베딩 등) 시각화 이미지를 저장합니다.
+                # 아래는 예시 호출이며, 실제 구현에 맞게 수정할 수 있습니다.
+                save_visualization(wearing_img, product_img, loss.item() * grad_acc_steps, vis_path)
         
-        del anchors, candidates, emb_anchor, emb_candidate, loss
-        # -----------------------------
-        # Validation
-        # -----------------------------
+        avg_loss = running_loss / len(train_loader)
+        print(f"Epoch {epoch+1}/{epochs} - Avg Loss: {avg_loss:.4f}")
+        
+        # Epoch마다 Validation 수행
         model.eval()
-        val_tp = 0
-        val_fp = 0
-        val_tn = 0
-        val_fn = 0
-        val_loss_sum = 0.0
-
+        all_query_emb = []
+        all_candidate_emb = []
         with torch.no_grad():
-            for val_i, (val_anchors, val_candidates, val_labels) in enumerate(tqdm(val_loader, desc="[Val]")):
-                val_anchors = val_anchors.to(device)
-                val_candidates = val_candidates.to(device)
-                val_labels = val_labels.to(device)
-
-                with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-                    val_emb_anchor = model(val_anchors)[1]
-                    val_emb_candidate = model(val_candidates)[1]
-                    val_loss = criterion(val_emb_anchor, val_emb_candidate, val_labels)
-                    val_loss_sum += val_loss.item()
-
-                tp, fp, tn, fn = calculate_tp_fp_tn_fn(
-                    val_emb_anchor, val_emb_candidate, val_labels,
-                    threshold=margin,
-                    distance_metric=distance_metric
-                )
-                val_tp += tp
-                val_fp += fp
-                val_tn += tn
-                val_fn += fn
-
-        val_loss_avg = val_loss_sum / max(len(val_loader), 1)
-        val_acc = ((val_tp+val_tn) / (val_tp + val_fp + val_tn + val_fn)) * 100.0
-        val_f1 = compute_f1_score(val_tp, val_fp, val_tn, val_fn)
-        print(f"[Val] Epoch {epoch+1} - Loss: {val_loss_avg:.4f}, Acc: {val_acc:.2f}%, F1: {val_f1:.4f}")
+            for val_wearing, val_product in tqdm(val_loader, desc="[Validation]"):
+                val_wearing = val_wearing.to(device)
+                val_product = val_product.to(device)
+                if method == 'simclr':
+                    q_emb = model(val_wearing)
+                    p_emb = model(val_product)
+                elif method == 'moco':
+                    # For evaluation, use encode() function from MoCoModel (should be defined in the model)
+                    q_emb = model.encode(val_wearing)
+                    p_emb = model.encode(val_product)
+                all_query_emb.append(q_emb)
+                all_candidate_emb.append(p_emb)
+        query_emb = torch.cat(all_query_emb, dim=0)
+        candidate_emb = torch.cat(all_candidate_emb, dim=0)
+        topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10))
+        print(f"Validation Top1: {topk_acc[1]:.2f}% | Top5: {topk_acc[5]:.2f}% | Top10: {topk_acc[10]:.2f}%")
         if use_wandb:
-            wandb.log({"Val/Avg loss": val_loss_avg, "Val/Avg acc": val_acc, "Val/Avg f1": val_f1, "epoch": epoch + 1})
+            wandb.log({"val/top1": topk_acc[1],
+                       "val/top5": topk_acc[5],
+                       "val/top10": topk_acc[10],
+                       "epoch": epoch+1})
         
+        # Epoch-level visualization (예: 전체 임베딩 분포, distance matrix 등)
+        epoch_vis_path = os.path.join(vis_dir, f"epoch_{epoch+1}_overview.png")
+        save_visualization(query_emb, candidate_emb, avg_loss, epoch_vis_path, mode="epoch")
         
-        # -----------------------------
-        # EMA Validation
-        # -----------------------------
-        ema_model = ema.module
-        ema_model.eval()
-        val_tp = 0
-        val_fp = 0
-        val_tn = 0
-        val_fn = 0
-        val_loss_sum = 0.0
-
-        with torch.no_grad():
-            for val_i, (val_anchors, val_candidates, val_labels) in enumerate(tqdm(val_loader, desc="[EMA]")):
-                val_anchors = val_anchors.to(device)
-                val_candidates = val_candidates.to(device)
-                val_labels = val_labels.to(device)
-
-                with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-                    val_emb_anchor = ema_model(val_anchors)[1]
-                    val_emb_candidate = ema_model(val_candidates)[1]
-                    val_loss = criterion(val_emb_anchor, val_emb_candidate, val_labels)
-                    val_loss_sum += val_loss.item()
-
-                tp, fp, tn, fn = calculate_tp_fp_tn_fn(
-                    val_emb_anchor, val_emb_candidate, val_labels,
-                    threshold=margin,
-                    distance_metric=distance_metric
-                )
-                val_tp += tp
-                val_fp += fp
-                val_tn += tn
-                val_fn += fn
-
-        ema_loss_avg = val_loss_sum / max(len(val_loader), 1)
-        ema_acc = ((val_tp+val_tn) / (val_tp + val_fp + val_tn + val_fn)) * 100.0
-        ema_f1 = compute_f1_score(val_tp, val_fp, val_tn, val_fn)
-        print(f"[EMA] Epoch {epoch+1} - Loss: {ema_loss_avg:.4f}, Acc: {ema_acc:.2f}%, F1: {ema_f1:.4f}")
-        if use_wandb:
-            wandb.log({"EMA/Avg loss": ema_loss_avg, "EMA/Avg acc": ema_acc, "EMA/Avg f1": ema_f1, "epoch": epoch + 1})
-
-        del val_anchors, val_candidates, val_emb_anchor, val_emb_candidate, val_loss
-        # -----------------------------
-        # Early Stopping & Checkpoint
-        # -----------------------------
+        # Checkpoint 저장
         ckpt_name = f"epoch_{epoch+1}.pth.tar"
         ckpt_path = os.path.join(save_dir, ckpt_name)
         save_checkpoint({
-            'epoch': epoch + 1,
+            'epoch': epoch+1,
             'state_dict': model.state_dict(),
             'optimizer': optimizer.state_dict(),
         }, ckpt_path)
-        print(f"=> Checkpoint saved: {ckpt_path}")
+        print(f"Checkpoint saved: {ckpt_path}")
         
-        ema_ckpt_name = f"epoch_{epoch+1}_ema.pth.tar"
-        ema_ckpt_path = os.path.join(save_dir, ema_ckpt_name)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': ema_model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-        }, ckpt_path)
-        print(f"=> EMA Checkpoint saved: {ema_ckpt_path}")
-
-       #if val_acc > best_val_acc:
-       #    best_val_acc = val_acc
-       #    epochs_no_improve = 0
-       #else:
-       #    epochs_no_improve += 1
-       #
-       #if epochs_no_improve >= patience:
-       #    print(f"Early stopping triggered at epoch {epoch+1}")
-       #    break
-
-        torch.cuda.empty_cache()
-    
+        # Early Stopping based on Top1 accuracy
+        if topk_acc[1] > best_val_top1:
+            best_val_top1 = topk_acc[1]
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            print(f"No improvement for {epochs_no_improve} epoch(s).")
+            if epochs_no_improve >= early_stopping_patience:
+                print(f"Early stopping triggered at epoch {epoch+1}.")
+                break
+        
     print("===== Training Complete =====")
-
 
 if __name__ == '__main__':
     main()
