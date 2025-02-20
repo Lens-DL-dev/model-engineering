@@ -1,15 +1,15 @@
 data:
-  train_dir: "/home/ubuntu/dev/dataset/main"
-  train_metainfo_path: /home/ubuntu/dev/dataset/main/train_metainfo.json
-  val_dir: "/home/ubuntu/dev/dataset/main"
-  val_metainfo_path: /home/ubuntu/dev/dataset/main/val_metainfo.json
-  negative_count: 13
+  train_dir: "/workspace/main"
+  train_metainfo_path: "/workspace/main/train_metainfo.json"
+  val_dir: "/workspace/main"
+  val_metainfo_path: "/workspace/main/val_metainfo.json"
+  negative_count: 31
   
   n_mask_channels: 0
 
 training:
   epochs: 20
-  batch_size: 32          # => 한 번에 anchor 8개
+  batch_size: 48          # => 한 번에 anchor 8개
   learning_rate: 0.0001
   num_workers: 8
   gradient_accumulation_steps: 1

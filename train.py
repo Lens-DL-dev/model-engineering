@@ -225,9 +225,9 @@ def main():
                 wandb.log({"train/loss": current_loss, "step": global_step, "epoch": epoch + 1})
             
             # -----------------------------
-            # (NEW) 100번째 배치마다 시각화
+            # (NEW) 10번째 배치마다 시각화
             # -----------------------------
-            if (i % 100 == 0) and (i > 0):
+            if (i % 10 == 0) and (i > 0):
                 current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
                 os.makedirs(current_vis_dir, exist_ok=True)
 
@@ -347,6 +347,9 @@ def main():
             wandb.log({"EMA/Avg loss": ema_loss_avg, "EMA/Avg acc": ema_acc, "EMA/Avg f1": ema_f1, "epoch": epoch + 1})
 
         del val_anchors, val_candidates, val_emb_anchor, val_emb_candidate, val_loss
+        
+        
+        
         # -----------------------------
         # Early Stopping & Checkpoint
         # -----------------------------

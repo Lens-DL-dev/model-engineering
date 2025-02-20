@@ -35,14 +35,31 @@ class ContrastiveFashionDataset(Dataset):
         if transform is not None:
             self.transform = transform
         else:
-            self.transform = transforms.Compose([
+            # wearing 이미지와 product 이미지에 대한 transform을 따로 정의
+            self.product_transform = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Resize((image_size, image_size)),
                 transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406] + [0] * n_mask_channels, # 250121_wsj N채널 추가 ; 기존 [0.485,0.456,0.406]
-                    std=[0.229, 0.224, 0.225] + [1] * n_mask_channels #  250121_wsj N채널 추가 ; 기존 [0.229, 0.224, 0.225]
+                    mean=[0.485, 0.456, 0.406] + [0] * n_mask_channels,
+                    std=[0.229, 0.224, 0.225] + [1] * n_mask_channels
                 )
             ])
+            
+            # wearing 이미지용 transform (augmentation 추가)
+            self.wearing_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomResizedCrop(
+                    size=image_size,
+                    scale=(0.8, 1.0),  # 원본 크기의 80~100%
+                    ratio=(0.9, 1.1)   # 가로세로 비율 유지
+                ),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406] + [0] * n_mask_channels,
+                    std=[0.229, 0.224, 0.225] + [1] * n_mask_channels
+                )
+            ])
+            self.transform = None  # 기존 transform 변수는 None으로 설정
 
         # 1) wearing_info.json 로드
         with open(metainfo_path, 'r', encoding='utf-8') as f:
@@ -173,11 +190,10 @@ class ContrastiveFashionDataset(Dataset):
         candidate_list = [pos_img] + neg_imgs  # 길이: 1 + N
         label_list = [1] + [0]*self.negative_count
 
-        # transform 적용
-        if self.transform:
-            anchor_img = self.transform(anchor_img)
-            for i in range(len(candidate_list)):
-                candidate_list[i] = self.transform(candidate_list[i])
+        # transform 적용 (wearing과 product 이미지 구분)
+        anchor_img = self.wearing_transform(anchor_img)
+        for i in range(len(candidate_list)):
+            candidate_list[i] = self.product_transform(candidate_list[i])
 
         return anchor_img, candidate_list, torch.tensor(label_list, dtype=torch.float)
 
