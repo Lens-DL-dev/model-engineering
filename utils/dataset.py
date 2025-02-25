@@ -4,6 +4,7 @@ import json
 import random
 import numpy as np
 from PIL import Image
+import PIL
 
 import torch
 from torch.utils.data import Dataset
@@ -159,43 +160,50 @@ class ContrastiveFashionDataset(Dataset):
         return len(self.anchor_items)
 
     def __getitem__(self, index):
-        """
-        반환:
-          anchor_img, 
-          [pos_img, neg_1, neg_2, ..., neg_n],
-          [1, 0, 0, ..., 0]
-        """
-        anchor_info = self.anchor_items[index]
-        anchor_img_path = anchor_info["img_path"]
-        anchor_mask_path = anchor_info["mask_path"]
-        anchor_code = anchor_info["product_code"]
-        category = anchor_info["category"]
+        max_retries = 3  # 최대 재시도 횟수
+        for _ in range(max_retries):
+            try:
+                anchor_info = self.anchor_items[index]
+                anchor_img_path = anchor_info["img_path"]
+                anchor_mask_path = anchor_info["mask_path"]
+                anchor_code = anchor_info["product_code"]
+                category = anchor_info["category"]
 
-        # anchor 이미지 로드
-        anchor_img = self._load_image_with_mask(anchor_img_path, anchor_mask_path)  #250120_kdi ; 기존 : self._load_image(anchor_path)
-        if anchor_img is None:
-            return self.__getitem__(random.randint(0, len(self)-1))
-        
-        # Positive 이미지 1장 (anchor_code의 in-shop 중 하나)
-        pos_img = self._get_positive_item(anchor_code)
-        if pos_img is None:
-            return self.__getitem__(random.randint(0, len(self)-1))
-            
-        # Negative 이미지 N장 (같은 category, 다른 code)
-        neg_imgs = self._get_negative_item(anchor_code, category)
-        if neg_imgs is None:
-            return self.__getitem__(random.randint(0, len(self)-1))
-        
-        # 최종 candidate 리스트 & 레이블
-        candidate_list = [pos_img] + neg_imgs  # 길이: 1 + N
-        label_list = [1] + [0]*self.negative_count
+                # anchor 이미지 로드
+                anchor_img = self._load_image_with_mask(anchor_img_path, anchor_mask_path)
+                if anchor_img is None:
+                    index = random.randint(0, len(self)-1)
+                    continue
+                
+                # Positive 이미지 1장
+                pos_img = self._get_positive_item(anchor_code)
+                if pos_img is None:
+                    index = random.randint(0, len(self)-1)
+                    continue
+                    
+                # Negative 이미지 N장
+                neg_imgs = self._get_negative_item(anchor_code, category)
+                if neg_imgs is None:
+                    index = random.randint(0, len(self)-1)
+                    continue
+                
+                # 최종 candidate 리스트 & 레이블
+                candidate_list = [pos_img] + neg_imgs
+                label_list = [1] + [0]*self.negative_count
 
-        # transform 적용 (wearing과 product 이미지 구분)
-        anchor_img = self.wearing_transform(anchor_img)
-        for i in range(len(candidate_list)):
-            candidate_list[i] = self.product_transform(candidate_list[i])
+                # transform 적용
+                anchor_img = self.wearing_transform(anchor_img)
+                for i in range(len(candidate_list)):
+                    candidate_list[i] = self.product_transform(candidate_list[i])
 
-        return anchor_img, candidate_list, torch.tensor(label_list, dtype=torch.float)
+                return anchor_img, candidate_list, torch.tensor(label_list, dtype=torch.float)
+                
+            except Exception as e:
+                print(f"Error processing item {index}: {str(e)}")
+                index = random.randint(0, len(self)-1)
+                
+        # 최대 재시도 횟수를 초과한 경우
+        raise RuntimeError(f"Failed to load valid data after {max_retries} attempts")
 
     def _get_positive_item(self, anchor_code):
         if anchor_code in self.product_dict:
@@ -249,25 +257,30 @@ class ContrastiveFashionDataset(Dataset):
         #    return None
         return img
     
-    def _load_image_with_mask(self, img_path, mask_path): # 250120_kdi 추가
+    def _load_image_with_mask(self, img_path, mask_path):
+        try:
             img = Image.open(img_path).convert('RGB')
-            #if img.width > img.height:
-            #    return None
+        except (PIL.UnidentifiedImageError, OSError, IOError) as e:
+            print(f"Warning: Failed to load image {img_path}. Skipping...")
+            return None
         
-            # mask 데이터를 사용하지 않는 경우 img만 리턴
-            if mask_path is None:
-                return img
-            
+        # mask 데이터를 사용하지 않는 경우 img만 리턴
+        if mask_path is None:
+            return img
+        
+        try:
             if os.path.exists(mask_path):
                 mask = Image.open(mask_path).convert('L')
             else:
-                #raise FileNotFoundError(f"Mask image for {img_path} not found")
                 mask = Image.new('L', img.size, color=0)  # 빈 마스크 생성
+        except (PIL.UnidentifiedImageError, OSError, IOError) as e:
+            print(f"Warning: Failed to load mask {mask_path}. Using empty mask...")
+            mask = Image.new('L', img.size, color=0)
 
-            img = np.array(img)
-            mask = np.array(mask)[:, :, np.newaxis] # 차원 추가 [H, W, 1]
-            combined = np.concatenate((img, mask.astype(np.uint8)), axis=-1)  # [H, W, 4] 
-            return combined
+        img = np.array(img)
+        mask = np.array(mask)[:, :, np.newaxis] # 차원 추가 [H, W, 1]
+        combined = np.concatenate((img, mask.astype(np.uint8)), axis=-1)  # [H, W, 4] 
+        return combined
 
 def collate_fn_contrastive(batch):
     """

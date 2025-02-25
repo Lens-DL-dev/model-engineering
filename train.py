@@ -225,9 +225,9 @@ def main():
                 wandb.log({"train/loss": current_loss, "step": global_step, "epoch": epoch + 1})
             
             # -----------------------------
-            # (NEW) 10번째 배치마다 시각화
+            # (NEW) 100번째 배치마다 시각화
             # -----------------------------
-            if (i % 10 == 0) and (i > 0):
+            if (i % 100 == 0) and (i > 0):
                 current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
                 os.makedirs(current_vis_dir, exist_ok=True)
 

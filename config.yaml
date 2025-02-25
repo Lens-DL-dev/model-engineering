@@ -1,8 +1,8 @@
 data:
-  train_dir: "/workspace/main"
-  train_metainfo_path: "/workspace/main/train_metainfo.json"
-  val_dir: "/workspace/main"
-  val_metainfo_path: "/workspace/main/val_metainfo.json"
+  train_dir: "/workspace/dataset/output/dataset"
+  train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
+  val_dir: "/workspace/dataset/output/dataset"
+  val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
   negative_count: 31
   
   n_mask_channels: 0
