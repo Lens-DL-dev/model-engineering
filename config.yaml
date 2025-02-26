@@ -1,31 +1,32 @@
 data:
-  train_dir: "/home/ubuntu/dev/dataset/main"
-  train_metainfo_path: "/home/ubuntu/dev/dataset/main/train_metainfo.json"
-  val_dir: "/home/ubuntu/dev/dataset/main"
-  val_metainfo_path: "/home/ubuntu/dev/dataset/main/val_metainfo.json"
+  train_dir: "/workspace/dataset/output/dataset"
+  train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
+  val_dir: "/workspace/dataset/output/dataset"
+  val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
   n_mask_channels: 0
+  max_samples: 50000  # 각 데이터셋에서 사용할 최대 샘플 수 (적절한 수로 조정)
 
 training:
-  epochs: 20
-  batch_size: 64            # SimCLR/MoCo에서는 큰 배치가 유리함 (384×384 기준)
+  epochs: 500
+  batch_size: 192             # SimCLR/MoCo에서는 큰 배치가 유리함 (384×384 기준)
   learning_rate: 0.0001
-  num_workers: 1
+  num_workers: 24
   gradient_accumulation_steps: 1
   save_dir: "./checkpoints"
   vis_dir: "./vis_results"
-  early_stopping_patience: 3
+  early_stopping_patience: 5
 
 model:
-  method: "simclr"          # Options: "simclr" or "moco"
-  backbone: "convnext_tiny" # torchvision backbone (pretrained)
+  method: "simclr"            # Options: "simclr" or "moco"
+  backbone: "convnext_tiny"  # torchvision backbone (pretrained)
   pretrained: true
-  embed_dim: 256
+  embed_dim: 1024
   checkpoint: ""
   resume: false
-  image_size: 384           # 이미지 해상도 (384×384 추천)
+  image_size: 384             # 이미지 해상도 (384×384 추천)
   in_channels: 3
 
 loss:
   temperature: 0.07         # 온도 하이퍼파라미터 (SimCLR, MoCo 공용)
 
-use_wandb: False
+use_wandb: True

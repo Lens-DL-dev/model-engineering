@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 import wandb
@@ -12,7 +13,7 @@ import wandb
 from utils.config import load_config
 from utils.dataset import ContrastiveFashionDataset
 from utils.losses import NTXentLoss, InfoNCELoss
-from utils.visualization import save_visualization
+from utils.visualization import save_visualization, save_contrastive_matrix, save_topk_image_samples
 
 # Import model classes
 from models.simclr_model import SimCLRModel
@@ -32,6 +33,22 @@ def load_checkpoint(model, optimizer, filename):
     else:
         print(f"=> No checkpoint found at '{filename}'. Training from scratch.")
         return 0
+
+def compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10)):
+    """
+    query_emb, candidate_emb: (N, D) normalized embeddings.
+    각 query의 정답은 동일 인덱스의 candidate라고 가정.
+    """
+    # (N, N) 유사도 행렬 (내적)
+    similarity = torch.matmul(query_emb, candidate_emb.t())
+    # 내림차순 정렬
+    _, indices = similarity.topk(max(topk), dim=1)
+    gt = torch.arange(query_emb.shape[0], device=query_emb.device).unsqueeze(1)
+    correct = indices.eq(gt)
+    topk_acc = {}
+    for k in topk:
+        topk_acc[k] = correct[:, :k].any(dim=1).float().mean().item() * 100.0
+    return topk_acc
 
 def main():
     parser = argparse.ArgumentParser()
@@ -56,6 +73,7 @@ def main():
     lr = config['training']['learning_rate']
     num_workers = config['training']['num_workers']
     grad_acc_steps = config['training'].get('gradient_accumulation_steps', 1)
+    early_stopping_patience = config['training'].get('early_stopping_patience', 3)
     
     # checkpoint
     save_dir = os.path.join(config['training'].get('save_dir', './checkpoints'), run_name)
@@ -94,6 +112,9 @@ def main():
                               num_workers=num_workers, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
                             num_workers=num_workers, drop_last=False)
+    
+    vis_dir = config['training'].get('vis_dir', './vis_results')
+    os.makedirs(vis_dir, exist_ok=True)
     
     # -----------------------------
     # 4. Model / Loss / Optimizer
@@ -146,28 +167,90 @@ def main():
                     emb_wearing = model(wearing_img)
                     emb_product = model(product_img)
                     loss = criterion(emb_wearing, emb_product)
+                    # 배치 단위 top-k accuracy 계산
+                    with torch.no_grad():
+                        batch_topk = compute_topk_accuracy(emb_wearing, emb_product)
                 elif method == 'moco':
-                    # MoCo: query=wearing, key=product
                     logits, labels = model(wearing_img, product_img)
                     loss = criterion(logits, labels)
+                    # MoCo의 경우 queue를 포함한 정확한 계산을 위해 encode() 사용
+                    with torch.no_grad():
+                        q_emb = model.encode(wearing_img)
+                        p_emb = model.encode(product_img)
+                        batch_topk = compute_topk_accuracy(q_emb, p_emb)
+            
             loss = loss / grad_acc_steps
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             running_loss += loss.item() * grad_acc_steps
             
-            pbar.set_postfix({"loss": f"{loss.item() * grad_acc_steps:.4f}"})
+            pbar.set_postfix({
+                "loss": f"{loss.item() * grad_acc_steps:.4f}",
+                "top1": f"{batch_topk[1]:.1f}%"
+            })
             if use_wandb:
-                wandb.log({"train/loss": loss.item() * grad_acc_steps,
-                           "step": global_step,
-                           "epoch": epoch+1})
+                wandb.log({
+                    "train/loss": loss.item() * grad_acc_steps,
+                    "train/batch_top1": batch_topk[1],
+                    "train/batch_top5": batch_topk[5],
+                    "train/batch_top10": batch_topk[10],
+                    "step": global_step,
+                    "epoch": epoch+1
+                })
             
-            # 100번째 배치마다 visualization (예: 샘플 이미지와 임베딩 분포)
-            if (i + 1) % 100 == 0:
-                vis_path = os.path.join(vis_dir, f"epoch_{epoch+1}_batch_{i+1}.png")
-                # save_visualization 함수는 (wearing_img, product_img, loss, 임베딩 등) 시각화 이미지를 저장합니다.
-                # 아래는 예시 호출이며, 실제 구현에 맞게 수정할 수 있습니다.
-                save_visualization(wearing_img, product_img, loss.item() * grad_acc_steps, vis_path)
+            # -----------------------------
+            # (NEW) 100번째 배치마다 시각화
+            # -----------------------------
+            if (i % 100 == 0) and (i > 0):
+                current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
+                os.makedirs(current_vis_dir, exist_ok=True)
+                
+                # Create fake labels (all 1's for positive pairs within batch)
+                batch_size = wearing_img.size(0)
+                labels = torch.ones(batch_size, device=device)
+                
+                # Set visualization parameters
+                distance_metric = 'euclidean'  # or 'euclidean'
+                margin = None  # Set if you're using triplet or contrastive loss with margin
+                
+                if method == 'simclr':
+                    # 1) Contrastive Distance Plot
+                    save_contrastive_matrix(
+                        emb_wearing, emb_product, labels,
+                        save_path=os.path.join(current_vis_dir, "dist_plot.png"),
+                        distance_metric=distance_metric,
+                        margin=margin
+                    )
+                    # 2) top-k image samples
+                    save_topk_image_samples(
+                        wearing_img, product_img,
+                        emb_wearing, emb_product,
+                        k=3,
+                        distance_metric=distance_metric,
+                        out_dir=current_vis_dir,
+                    )
+                elif method == 'moco':
+                    # For MoCo, use the encoded embeddings
+                    with torch.no_grad():
+                        q_emb = model.encode(wearing_img)
+                        p_emb = model.encode(product_img)
+                        
+                    # 1) Contrastive Distance Plot
+                    save_contrastive_matrix(
+                        q_emb, p_emb, labels,
+                        save_path=os.path.join(current_vis_dir, "dist_plot.png"),
+                        distance_metric=distance_metric,
+                        margin=margin
+                    )
+                    # 2) top-k image samples
+                    save_topk_image_samples(
+                        wearing_img, product_img,
+                        q_emb, p_emb,
+                        k=3,
+                        distance_metric=distance_metric,
+                        out_dir=current_vis_dir,
+                    )
         
         avg_loss = running_loss / len(train_loader)
         print(f"Epoch {epoch+1}/{epochs} - Avg Loss: {avg_loss:.4f}")
@@ -184,11 +267,11 @@ def main():
                     q_emb = model(val_wearing)
                     p_emb = model(val_product)
                 elif method == 'moco':
-                    # For evaluation, use encode() function from MoCoModel (should be defined in the model)
                     q_emb = model.encode(val_wearing)
                     p_emb = model.encode(val_product)
                 all_query_emb.append(q_emb)
                 all_candidate_emb.append(p_emb)
+                
         query_emb = torch.cat(all_query_emb, dim=0)
         candidate_emb = torch.cat(all_candidate_emb, dim=0)
         topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10))

@@ -22,10 +22,11 @@ class ProjectionHead(nn.Module):
         return x
 
 class SimCLRModel(nn.Module):
-    def __init__(self, backbone="convnext_tiny", pretrained=True, embed_dim=256):
+    def __init__(self, backbone="convnext_tiny", pretrained=True, embed_dim=1024):
         super().__init__()
         if backbone == "convnext_tiny":
-            self.encoder = models.convnext_tiny(pretrained=pretrained)
+            weights = models.ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
+            self.encoder = models.convnext_tiny(weights=weights)
             # Remove the classifier
             self.encoder.classifier = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),    # Global Average Pooling
@@ -33,6 +34,17 @@ class SimCLRModel(nn.Module):
                 nn.Identity()               # Remove the original linear layer
             )
             in_dim = 768  # ConvNeXt Tiny의 channel 수
+            
+        elif backbone == "convnext_small":
+            weights = models.ConvNeXt_Small_Weights.IMAGENET1K_V1 if pretrained else None
+            self.encoder = models.convnext_small(weights=weights)
+            # Remove the classifier
+            self.encoder.classifier = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),    # Global Average Pooling
+                nn.Flatten(),               # Flatten to [batch_size, channels]
+                nn.Identity()               # Remove the original linear layer
+            )
+            in_dim = 768  # ConvNeXt Small의 channel 수도 768입니다
         else:
             raise NotImplementedError(f"Backbone {backbone} not implemented")
         self.projection_head = ProjectionHead(in_dim, embed_dim)
