@@ -68,3 +68,45 @@ def compute_f1_score(tp: int, fp: int, tn: int, fn: int) -> float:
     f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
     return f1
+
+def compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10)):
+    """
+    query_emb, candidate_emb: (N, D) 정규화된 임베딩
+    각 query의 정답은 동일 인덱스에 있다고 가정합니다.
+    Returns:
+      dict: {1: top1_accuracy, 5: top5_accuracy, 10: top10_accuracy} (단위: %)
+    """
+    # 차원 확인 및 처리
+    if query_emb.dim() == 1:
+        query_emb = query_emb.unsqueeze(0)
+    if candidate_emb.dim() == 1:
+        candidate_emb = candidate_emb.unsqueeze(0)
+    
+    # 임베딩 정규화
+    query_emb = F.normalize(query_emb, p=2, dim=1)
+    candidate_emb = F.normalize(candidate_emb, p=2, dim=1)
+    
+    # (N, N) 유사도 행렬 (내적 사용)
+    similarity = torch.matmul(query_emb, candidate_emb.t())
+    
+    # 차원 처리
+    if similarity.dim() == 0:
+        similarity = similarity.unsqueeze(0).unsqueeze(0)
+    elif similarity.dim() == 1:
+        similarity = similarity.unsqueeze(0)
+    
+    max_k = max(topk)
+    # max_k가 후보 수를 초과하지 않도록 보장
+    max_k = min(max_k, candidate_emb.size(0))
+    
+    _, indices = similarity.topk(max_k, dim=1, largest=True, sorted=True)
+    # 각 query의 정답은 자신의 인덱스에 있다고 가정
+    gt = torch.arange(query_emb.size(0), device=query_emb.device).unsqueeze(1)
+    correct = indices.eq(gt)
+    
+    topk_acc = {}
+    for k in topk:
+        k = min(k, max_k)  # k가 max_k를 초과하지 않도록 보장
+        topk_acc[k] = correct[:, :k].float().sum().item() / query_emb.size(0) * 100.0
+    
+    return topk_acc

@@ -3,29 +3,28 @@ data:
   train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
   val_dir: "/workspace/dataset/output/dataset"
   val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
-  negative_count: 31
-  
   n_mask_channels: 0
 
 training:
-  epochs: 20
-  batch_size: 48          # => 한 번에 anchor 8개
-  learning_rate: 0.0001
-  num_workers: 8
+  epochs: 50
+  batch_size: 320
+  learning_rate: 0.0003
+  num_workers: 32
   gradient_accumulation_steps: 1
   save_dir: "./checkpoints"
   vis_dir: "./vis_results"
-  early_stopping_patience: 3
+  early_stopping_patience: 5
+  warmup_epochs: 5
 
 model:
-  pretrained_model_name: "openai/clip-vit-base-patch32"
-  checkpoint: "./checkpoints/last_ckpt.pth.tar"
-  resume: false
+  backbone: "convnext_small"
+  embed_dim: 1024
+  checkpoint: "./checkpoints/neat-water-16/epoch_4.pth.tar" 
+  resume: true
   image_size: 224
   in_channels: 3
 
 loss:
-  margin: 1.0
-  distance_metric: "euclidean"
+  temperature: 0.07
 
 use_wandb: True
