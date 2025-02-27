@@ -3,12 +3,14 @@ data:
   train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
   val_dir: "/workspace/dataset/output/dataset"
   val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
+  color_group_path: "/workspace/dataset/color_batch_group.json"
+
   n_mask_channels: 0
 
 training:
   epochs: 50
   batch_size: 320
-  learning_rate: 0.0003
+  learning_rate: 0.00001
   num_workers: 32
   gradient_accumulation_steps: 1
   save_dir: "./checkpoints"
@@ -19,12 +21,13 @@ training:
 model:
   backbone: "convnext_small"
   embed_dim: 1024
-  checkpoint: "./checkpoints/neat-water-16/epoch_4.pth.tar" 
+  checkpoint: "./checkpoints/dazzling-serenity-23/epoch_6.pth.tar" 
   resume: true
   image_size: 224
   in_channels: 3
 
 loss:
-  temperature: 0.07
+  temperature: 0.03
+  hardneg_alpha: 4.0
 
 use_wandb: True

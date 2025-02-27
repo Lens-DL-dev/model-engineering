@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data import RandomSampler  # fallback
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 import wandb
@@ -13,10 +14,13 @@ from timm.utils import ModelEmaV2
 # 내부 모듈
 from utils.config import load_config
 from utils.dataset import ContrastiveFashionDataset, collate_fn_supcon
-from utils.losses import SupConLoss
+from utils.losses import HardNegSupConLoss  # 하드 네거티브 SupConLoss
 from utils.metrics import compute_topk_accuracy
 from utils.visualization import save_contrastive_matrix, save_topk_image_samples
 from models.convnext import ConvNextModel
+
+# 추가: ColorGroupSampler import
+from utils.sampler import ColorGroupSampler
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
@@ -56,6 +60,7 @@ def main():
     lr = config['training']['learning_rate']
     num_workers = config['training']['num_workers']
     temperature = config['loss'].get('temperature', 0.07)
+    alpha = config['loss'].get('hardneg_alpha', 2.0)  # 하드네거티브 가중치
     save_dir = os.path.join(config['training'].get('save_dir', './checkpoints'), run_name)
     os.makedirs(save_dir, exist_ok=True)
     vis_dir = os.path.join(config['training'].get('vis_dir', './vis_results'), run_name)
@@ -78,10 +83,11 @@ def main():
     device = torch.device("cuda:0")
     torch.backends.cudnn.benchmark = True
     
-    # 3. Dataset / Dataloader (SupCon 모드)
+    # 3. Dataset
     train_dataset = ContrastiveFashionDataset(
         root_dir=config['data']['train_dir'],
         metainfo_path=config['data']['train_metainfo_path'],
+        color_group_path=config['data'].get('color_group_path', None),
         is_train=True,
         image_size=image_size,
         n_mask_channels=config['data'].get('n_mask_channels', 0),
@@ -90,20 +96,35 @@ def main():
     val_dataset = ContrastiveFashionDataset(
         root_dir=config['data']['val_dir'],
         metainfo_path=config['data']['val_metainfo_path'],
+        color_group_path=config['data'].get('color_group_path', None),
         is_train=False,
         image_size=image_size,
         n_mask_channels=config['data'].get('n_mask_channels', 0),
         mode='supcon'
     )
     
+    # 4. ColorGroupSampler로 train_loader 구성
+    try:
+        if len(train_dataset) < batch_size:
+            print("Dataset size is smaller than batch_size. Using RandomSampler fallback.")
+            train_sampler = RandomSampler(train_dataset)
+        else:
+            train_sampler = ColorGroupSampler(train_dataset, batch_size=batch_size, shuffle=True)
+            print("Using ColorGroupSampler for training...")
+    except Exception as e:
+        # 상세한 에러 메시지 출력
+        print(f"ColorGroupSampler failed with error: {str(e)}")
+        print("Using RandomSampler fallback.")
+        train_sampler = RandomSampler(train_dataset)
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
+        batch_sampler=train_sampler if isinstance(train_sampler, ColorGroupSampler) else None,
         num_workers=num_workers,
-        drop_last=True,
         collate_fn=collate_fn_supcon
     )
+
+    # val_loader는 일반적 방법 (shuffle=False)
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -113,21 +134,21 @@ def main():
         collate_fn=collate_fn_supcon
     )
     
-    # 4. Model (ConvNeXt 기반)
+    # 5. Model (ConvNeXt)
     model = ConvNextModel(backbone=backbone, pretrained=True, embed_dim=embed_dim).to(device)
     ema = ModelEmaV2(model, decay=0.999)
     
-    # 5. Loss & Optimizer
-    criterion = SupConLoss(temperature=temperature)
+    # 6. Loss & Optimizer
+    criterion = HardNegSupConLoss(temperature=temperature, alpha=alpha)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scaler = GradScaler()
     
-    # 6. Resume Checkpoint (옵션)
+    # 7. Resume Checkpoint (옵션)
     start_epoch = 0
     if resume and checkpoint_path:
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
     
-    # 7. Training Loop
+    # 8. Training Loop
     print("===== Training Start =====")
     global_step = 0
     for epoch in range(start_epoch, epochs):
@@ -135,17 +156,18 @@ def main():
         running_loss = 0.0
         pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}")
         
-        for i, (wearing_imgs, product_imgs, product_codes) in pbar:
+        for i, (wearing_imgs, product_imgs, product_codes, color_groups) in pbar:
             global_step += wearing_imgs.shape[0]
+
             wearing_imgs = wearing_imgs.to(device, non_blocking=True)
             product_imgs = product_imgs.to(device, non_blocking=True)
             
             with autocast(device_type='cuda', dtype=torch.float16):
-                emb_wearing = model(wearing_imgs)  # [B, D]
-                emb_product = model(product_imgs)  # [B, D]
-                # 두 view를 concat하여 (2B, D) 임베딩 생성
-                embeddings = torch.cat([emb_wearing, emb_product], dim=0)
-                loss = criterion(embeddings, product_codes)
+                emb_wearing = model(wearing_imgs)   # (B, D)
+                emb_product = model(product_imgs)   # (B, D)
+                embeddings = torch.cat([emb_wearing, emb_product], dim=0)  # (2B, D)
+
+                loss = criterion(embeddings, product_codes, color_groups)
                 loss = loss / grad_acc_steps
             
             scaler.scale(loss).backward()
@@ -158,9 +180,10 @@ def main():
             current_loss = loss.item() * grad_acc_steps
             running_loss += current_loss
             
-            # 배치 단위 retrieval 평가 (wearing_imgs vs product_imgs)
+            # In-batch retrieval 정확도
             with torch.no_grad():
                 batch_topk = compute_topk_accuracy(emb_wearing, emb_product, topk=(1,5,10))
+            
             pbar.set_postfix({
                 "loss": f"{current_loss:.4f}",
                 "train/top1": f"{batch_topk[1]:.2f}%",
@@ -177,37 +200,38 @@ def main():
                     "epoch": epoch+1
                 })
             
-            # 100 배치마다 시각화
+            # (선택) 100 배치마다 시각화
             if (i % 100 == 0) and (i > 0):
                 current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
                 os.makedirs(current_vis_dir, exist_ok=True)
-                save_contrastive_matrix(emb_wearing, emb_product, None,
-                                          save_path=os.path.join(current_vis_dir, "dist_plot.png"),
-                                          distance_metric='cosine', margin=None)
-                save_topk_image_samples(wearing_imgs, product_imgs, emb_wearing, emb_product,
-                                        k=3, distance_metric='cosine', out_dir=current_vis_dir)
+                save_contrastive_matrix(
+                    emb_wearing, emb_product, None,
+                    save_path=os.path.join(current_vis_dir, "dist_plot.png"),
+                    distance_metric='cosine', margin=None
+                )
+                save_topk_image_samples(
+                    wearing_imgs, product_imgs,
+                    emb_wearing, emb_product,
+                    k=3, distance_metric='cosine',
+                    out_dir=current_vis_dir
+                )
         
         avg_loss = running_loss / len(train_loader)
         print(f"[Train] Epoch {epoch+1}/{epochs} - Avg Loss: {avg_loss:.4f}")
         if use_wandb:
             wandb.log({"train/Avg loss": avg_loss, "epoch": epoch+1})
         
-        # ------------- Validation -------------
+        # ----------------- Validation -----------------
         model.eval()
         all_wearing_emb = []
         all_product_emb = []
         with torch.no_grad():
-            for val_wearing, val_product, _ in tqdm(val_loader, desc="[Validation]"):
+            for val_wearing, val_product, _, _ in tqdm(val_loader, desc="[Validation]"):
                 val_wearing = val_wearing.to(device)
                 val_product = val_product.to(device)
                 
-                # 모델 출력 처리 방식 개선
-                out_wearing = model(val_wearing)
-                out_product = model(val_product)
-                
-                # 튜플 또는 리스트인 경우에만 인덱싱, 그렇지 않으면 그대로 사용
-                emb_wearing = out_wearing[1] if isinstance(out_wearing, (list, tuple)) and len(out_wearing) > 1 else out_wearing
-                emb_product = out_product[1] if isinstance(out_product, (list, tuple)) and len(out_product) > 1 else out_product
+                emb_wearing = model(val_wearing)
+                emb_product = model(val_product)
                 
                 all_wearing_emb.append(emb_wearing)
                 all_product_emb.append(emb_product)
@@ -224,7 +248,7 @@ def main():
                 "epoch": epoch+1
             })
         
-        # ------------- Checkpoint 저장 -------------
+        # ----------------- Checkpoint -----------------
         ckpt_name = f"epoch_{epoch+1}.pth.tar"
         ckpt_path = os.path.join(save_dir, ckpt_name)
         save_checkpoint({
@@ -233,7 +257,7 @@ def main():
             'optimizer': optimizer.state_dict(),
         }, ckpt_path)
         print(f"=> Checkpoint saved: {ckpt_path}")
-        
+
         torch.cuda.empty_cache()
     
     print("===== Training Complete =====")
