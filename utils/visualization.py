@@ -70,7 +70,7 @@ def save_visualization(x, y, loss_value, vis_path, mode="batch"):
         raise ValueError(f"Unknown mode '{mode}' for save_visualization")
 
 def save_contrastive_matrix(
-    emb_anchor, emb_candidate, labels, 
+    emb_anchor, emb_candidate, labels=None, 
     save_path="contrastive_matrix.png",
     distance_metric='euclidean',
     margin=None
@@ -78,6 +78,15 @@ def save_contrastive_matrix(
     """
     거리를 산점도로 시각화 + margin 선
     Positive(blue circle), Negative(red x)
+    
+    Parameters:
+        emb_anchor: (B, D) 임베딩 텐서
+        emb_candidate: (B, D) 임베딩 텐서
+        labels: None이면 대각선(같은 인덱스)을 positive, 다른 것을 negative로 가정
+               아니면 주어진 labels을 사용 (1=positive, 0=negative)
+        save_path: 저장 경로
+        distance_metric: 'euclidean' 또는 'cosine'
+        margin: 표시할 margin 값
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     if distance_metric == 'euclidean':
@@ -86,8 +95,16 @@ def save_contrastive_matrix(
         dist = 1.0 - F.cosine_similarity(emb_anchor, emb_candidate, dim=1)
 
     dist_data = dist.detach().cpu().numpy()
-    label_data = labels.detach().cpu().numpy()
     x_axis = np.arange(len(dist_data))
+    
+    # 레이블이 None이면 대각선(같은 인덱스)을 positive로 가정
+    if labels is None:
+        label_data = np.zeros(len(dist_data))
+        # 대각선 요소(같은 인덱스)만 1로 설정
+        for i in range(len(dist_data)):
+            label_data[i] = 1  # 같은 인덱스는 positive
+    else:
+        label_data = labels.detach().cpu().numpy()
 
     pos_mask = (label_data == 1)
     neg_mask = (label_data == 0)

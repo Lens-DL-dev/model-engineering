@@ -12,7 +12,7 @@ class ContrastiveFashionDataset(Dataset):
     - 상품 이미지 (product): 상대적으로 약한 augmentation
     두 transform 모두 ImageNet 평균/표준편차로 정규화합니다.
     """
-    def __init__(self, root_dir, metainfo_path, is_train=True, image_size=384, n_mask_channels=0, transform=None):
+    def __init__(self, root_dir, metainfo_path, is_train=True, image_size=384, n_mask_channels=0, transform=None, max_samples=-1):
         super().__init__()
         self.root_dir = root_dir
         self.is_train = is_train
@@ -63,6 +63,13 @@ class ContrastiveFashionDataset(Dataset):
                 "wearing_path": wearing_path,
                 "product_path": product_path
             })
+
+        # 샘플 수 제한
+        if max_samples > 0 and len(self.samples) > max_samples:
+            import random
+            random.shuffle(self.samples)
+            self.samples = self.samples[:max_samples]
+            print(f"Using {max_samples} samples out of the full dataset")
 
     def __len__(self):
         return len(self.samples)

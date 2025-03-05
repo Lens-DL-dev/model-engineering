@@ -96,17 +96,21 @@ def main():
     
     image_size = config['model'].get('image_size', 384)
     n_mask_channels = config['data'].get('n_mask_channels', 0)
+    # 데이터셋 크기 제한 옵션 추가
+    max_samples = config['data'].get('max_samples', -1)  # -1은 전체 사용을 의미
     
     train_dataset = ContrastiveFashionDataset(root_dir=train_dir,
                                                metainfo_path=train_metainfo,
                                                is_train=True,
                                                image_size=image_size,
-                                               n_mask_channels=n_mask_channels)
+                                               n_mask_channels=n_mask_channels,
+                                               max_samples=max_samples)
     val_dataset = ContrastiveFashionDataset(root_dir=val_dir,
                                              metainfo_path=val_metainfo,
                                              is_train=False,
                                              image_size=image_size,
-                                             n_mask_channels=n_mask_channels)
+                                             n_mask_channels=n_mask_channels,
+                                             max_samples=max_samples)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, drop_last=True)
@@ -149,6 +153,11 @@ def main():
     
     best_val_top1 = 0.0
     epochs_no_improve = 0
+
+    # 에폭당 검증 여부와 스텝 기반 검증 설정 추가
+    validate_every_epoch = config['training'].get('validate_every_epoch', True)
+    validate_every_n_steps = config['training'].get('validate_every_n_steps', 1000)
+    save_every_n_steps = config['training'].get('save_every_n_steps', 1000)
 
     print("===== Training Start =====")
     global_step = 0
@@ -202,13 +211,9 @@ def main():
             # -----------------------------
             # (NEW) 100번째 배치마다 시각화
             # -----------------------------
-            if (i % 100 == 0) and (i > 0):
+            if (i % 200 == 0) and (i > 0):
                 current_vis_dir = os.path.join(vis_dir, f"epoch_{epoch+1}_step_{i}")
                 os.makedirs(current_vis_dir, exist_ok=True)
-                
-                # Create fake labels (all 1's for positive pairs within batch)
-                batch_size = wearing_img.size(0)
-                labels = torch.ones(batch_size, device=device)
                 
                 # Set visualization parameters
                 distance_metric = 'euclidean'  # or 'euclidean'
@@ -217,7 +222,7 @@ def main():
                 if method == 'simclr':
                     # 1) Contrastive Distance Plot
                     save_contrastive_matrix(
-                        emb_wearing, emb_product, labels,
+                        emb_wearing, emb_product,
                         save_path=os.path.join(current_vis_dir, "dist_plot.png"),
                         distance_metric=distance_metric,
                         margin=margin
@@ -238,7 +243,7 @@ def main():
                         
                     # 1) Contrastive Distance Plot
                     save_contrastive_matrix(
-                        q_emb, p_emb, labels,
+                        q_emb, p_emb,
                         save_path=os.path.join(current_vis_dir, "dist_plot.png"),
                         distance_metric=distance_metric,
                         margin=margin
@@ -252,60 +257,105 @@ def main():
                         out_dir=current_vis_dir,
                     )
         
+            # 스텝 기반 검증 추가
+            if not validate_every_epoch and global_step % validate_every_n_steps == 0:
+                print(f"\nValidating at step {global_step}...")
+                model.eval()
+                # 여기에 기존 검증 코드 추가 (원래 에폭 끝에서 실행되는 코드)
+                all_query_emb = []
+                all_candidate_emb = []
+                with torch.no_grad():
+                    for val_wearing, val_product in tqdm(val_loader, desc="[Validation]"):
+                        val_wearing = val_wearing.to(device)
+                        val_product = val_product.to(device)
+                        if method == 'simclr':
+                            q_emb = model(val_wearing)
+                            p_emb = model(val_product)
+                        elif method == 'moco':
+                            q_emb = model.encode(val_wearing)
+                            p_emb = model.encode(val_product)
+                        all_query_emb.append(q_emb)
+                        all_candidate_emb.append(p_emb)
+                        
+                query_emb = torch.cat(all_query_emb, dim=0)
+                candidate_emb = torch.cat(all_candidate_emb, dim=0)
+                topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10))
+                print(f"Validation Top1: {topk_acc[1]:.2f}% | Top5: {topk_acc[5]:.2f}% | Top10: {topk_acc[10]:.2f}%")
+                if use_wandb:
+                    wandb.log({"val/top1": topk_acc[1],
+                               "val/top5": topk_acc[5],
+                               "val/top10": topk_acc[10],
+                               "step": global_step})
+                
+                # 체크포인트 저장
+                if global_step % save_every_n_steps == 0:
+                    ckpt_name = f"step_{global_step}.pth.tar"
+                    ckpt_path = os.path.join(save_dir, ckpt_name)
+                    save_checkpoint({
+                        'epoch': epoch+1,
+                        'step': global_step,
+                        'state_dict': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                    }, ckpt_path)
+                    print(f"Checkpoint saved: {ckpt_path}")
+                
+                model.train()  # 다시 학습 모드로 전환
+        
         avg_loss = running_loss / len(train_loader)
         print(f"Epoch {epoch+1}/{epochs} - Avg Loss: {avg_loss:.4f}")
         
-        # Epoch마다 Validation 수행
-        model.eval()
-        all_query_emb = []
-        all_candidate_emb = []
-        with torch.no_grad():
-            for val_wearing, val_product in tqdm(val_loader, desc="[Validation]"):
-                val_wearing = val_wearing.to(device)
-                val_product = val_product.to(device)
-                if method == 'simclr':
-                    q_emb = model(val_wearing)
-                    p_emb = model(val_product)
-                elif method == 'moco':
-                    q_emb = model.encode(val_wearing)
-                    p_emb = model.encode(val_product)
-                all_query_emb.append(q_emb)
-                all_candidate_emb.append(p_emb)
-                
-        query_emb = torch.cat(all_query_emb, dim=0)
-        candidate_emb = torch.cat(all_candidate_emb, dim=0)
-        topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10))
-        print(f"Validation Top1: {topk_acc[1]:.2f}% | Top5: {topk_acc[5]:.2f}% | Top10: {topk_acc[10]:.2f}%")
-        if use_wandb:
-            wandb.log({"val/top1": topk_acc[1],
-                       "val/top5": topk_acc[5],
-                       "val/top10": topk_acc[10],
-                       "epoch": epoch+1})
-        
-        # Epoch-level visualization (예: 전체 임베딩 분포, distance matrix 등)
-        epoch_vis_path = os.path.join(vis_dir, f"epoch_{epoch+1}_overview.png")
-        save_visualization(query_emb, candidate_emb, avg_loss, epoch_vis_path, mode="epoch")
-        
-        # Checkpoint 저장
-        ckpt_name = f"epoch_{epoch+1}.pth.tar"
-        ckpt_path = os.path.join(save_dir, ckpt_name)
-        save_checkpoint({
-            'epoch': epoch+1,
-            'state_dict': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-        }, ckpt_path)
-        print(f"Checkpoint saved: {ckpt_path}")
-        
-        # Early Stopping based on Top1 accuracy
-        if topk_acc[1] > best_val_top1:
-            best_val_top1 = topk_acc[1]
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-            print(f"No improvement for {epochs_no_improve} epoch(s).")
-            if epochs_no_improve >= early_stopping_patience:
-                print(f"Early stopping triggered at epoch {epoch+1}.")
-                break
+        # 에폭 기반 검증 (기존 코드)
+        if validate_every_epoch:
+            model.eval()
+            all_query_emb = []
+            all_candidate_emb = []
+            with torch.no_grad():
+                for val_wearing, val_product in tqdm(val_loader, desc="[Validation]"):
+                    val_wearing = val_wearing.to(device)
+                    val_product = val_product.to(device)
+                    if method == 'simclr':
+                        q_emb = model(val_wearing)
+                        p_emb = model(val_product)
+                    elif method == 'moco':
+                        q_emb = model.encode(val_wearing)
+                        p_emb = model.encode(val_product)
+                    all_query_emb.append(q_emb)
+                    all_candidate_emb.append(p_emb)
+                    
+            query_emb = torch.cat(all_query_emb, dim=0)
+            candidate_emb = torch.cat(all_candidate_emb, dim=0)
+            topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1, 5, 10))
+            print(f"Validation Top1: {topk_acc[1]:.2f}% | Top5: {topk_acc[5]:.2f}% | Top10: {topk_acc[10]:.2f}%")
+            if use_wandb:
+                wandb.log({"val/top1": topk_acc[1],
+                           "val/top5": topk_acc[5],
+                           "val/top10": topk_acc[10],
+                           "epoch": epoch+1})
+            
+            # Epoch-level visualization (예: 전체 임베딩 분포, distance matrix 등)
+            epoch_vis_path = os.path.join(vis_dir, f"epoch_{epoch+1}_overview.png")
+            save_visualization(query_emb, candidate_emb, avg_loss, epoch_vis_path, mode="epoch")
+            
+            # Checkpoint 저장
+            ckpt_name = f"epoch_{epoch+1}.pth.tar"
+            ckpt_path = os.path.join(save_dir, ckpt_name)
+            save_checkpoint({
+                'epoch': epoch+1,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, ckpt_path)
+            print(f"Checkpoint saved: {ckpt_path}")
+            
+            # Early Stopping based on Top1 accuracy
+            if topk_acc[1] > best_val_top1:
+                best_val_top1 = topk_acc[1]
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                print(f"No improvement for {epochs_no_improve} epoch(s).")
+                if epochs_no_improve >= early_stopping_patience:
+                    print(f"Early stopping triggered at epoch {epoch+1}.")
+                    break
         
     print("===== Training Complete =====")
 

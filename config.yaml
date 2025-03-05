@@ -7,7 +7,7 @@ data:
   max_samples: 50000  # 각 데이터셋에서 사용할 최대 샘플 수 (적절한 수로 조정)
 
 training:
-  epochs: 500
+  epochs: 512
   batch_size: 192             # SimCLR/MoCo에서는 큰 배치가 유리함 (384×384 기준)
   learning_rate: 0.0001
   num_workers: 24
@@ -15,6 +15,9 @@ training:
   save_dir: "./checkpoints"
   vis_dir: "./vis_results"
   early_stopping_patience: 5
+  validate_every_epoch: false  # 에폭 단위 검증 대신 스텝 단위 검증 사용
+  validate_every_n_steps: 500  # 100 스텝마다 검증 수행
+  save_every_n_steps: 500      # 200 스텝마다 체크포인트 저장
 
 model:
   method: "simclr"            # Options: "simclr" or "moco"
