@@ -28,13 +28,15 @@ class ContrastiveLoss(nn.Module):
 
 class SupConLoss(nn.Module):
     """
-    Supervised Contrastive Loss with adaptive temperature
+    A100 GPU에 최적화된 Supervised Contrastive Loss
+    메모리 효율성 개선과 하드 마이닝 기능 강화
     """
-    def __init__(self, temperature=0.07, base_temperature=0.07, hard_mining=True):
+    def __init__(self, temperature=0.07, base_temperature=0.07, hard_mining=True, adaptive_temperature=True):
         super().__init__()
         self.temperature = temperature
         self.base_temperature = base_temperature
         self.hard_mining = hard_mining
+        self.adaptive_temperature = adaptive_temperature
 
     def forward(self, embeddings, product_codes, memory_embeddings=None, memory_codes=None):
         """
@@ -80,7 +82,18 @@ class SupConLoss(nn.Module):
             anchor_count = len(anchor_idx)
             
             # 모든 앵커와 모든 샘플(자신 포함) 간의 유사도 계산
-            sim_matrix = torch.matmul(embeddings, all_embeddings.T) / self.temperature
+            # 메모리 효율성을 위해 청크 단위로 계산 (대용량 메모리 뱅크 사용 시)
+            chunk_size = min(2048, all_embeddings.shape[0])  # 청크 크기 설정
+            sim_matrix = torch.zeros((2*batch_size, all_embeddings.shape[0]), device=device)
+            
+            for i in range(0, 2*batch_size, chunk_size):
+                end_i = min(i + chunk_size, 2*batch_size)
+                for j in range(0, all_embeddings.shape[0], chunk_size):
+                    end_j = min(j + chunk_size, all_embeddings.shape[0])
+                    # 부분 유사도 행렬 계산
+                    sim_matrix[i:end_i, j:end_j] = torch.matmul(
+                        embeddings[i:end_i], all_embeddings[j:end_j].T
+                    ) / self.temperature
         else:
             # 원래 방식대로 batch 내에서만 계산
             sim_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
@@ -116,17 +129,8 @@ class SupConLoss(nn.Module):
         # log(분자/분모) = log(분자) - log(분모)
         denominator = exp_sim.sum(dim=1, keepdim=True)
         
-        # 각 앵커에 대한 positive 샘플의 log(exp_sim)
-        log_prob = sim_matrix - torch.log(denominator + 1e-12)
-        
-        # 각 앵커에 대한 positive 샘플 간의 평균 log_prob
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-12)
-        
-        # 손실 계산 (negated mean_log_prob_pos)
-        loss = - mean_log_prob_pos.mean()
-        
         # 하드 네거티브 마이닝을 위한 온도 조절
-        if self.hard_mining:
+        if self.hard_mining and self.adaptive_temperature:
             # 각 앵커에 대해 가장 어려운 negative 샘플 식별
             # mask의 반전: 1이면 negative, 0이면 positive
             neg_mask = 1 - mask
@@ -148,6 +152,25 @@ class SupConLoss(nn.Module):
             # 마진이 큰 경우 (쉬운 샘플) 온도를 높여 덜 공격적으로 학습
             adaptive_temp = self.temperature * torch.sigmoid(margin).unsqueeze(1)
             sim_matrix = sim_matrix / adaptive_temp
+            
+            # 하드 네거티브에 대해 가중치 부여 (더 어려운 negative에 더 집중)
+            neg_weight = F.softmax(sim_matrix_neg, dim=1)
+            neg_weight = neg_weight * neg_mask
+            # 이제 exp_sim에 neg_weight를 곱해서 하드 네거티브에 더 집중
+            exp_sim = torch.exp(sim_matrix)
+            if memory_embeddings is None:
+                exp_sim = exp_sim * (1 - torch.eye(2 * batch_size, device=device))
+            exp_sim = exp_sim * (mask + neg_weight * neg_mask)
+            denominator = exp_sim.sum(dim=1, keepdim=True)
+        
+        # 각 앵커에 대한 positive 샘플의 log(exp_sim)
+        log_prob = sim_matrix - torch.log(denominator + 1e-12)
+        
+        # 각 앵커에 대한 positive 샘플 간의 평균 log_prob
+        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-12)
+        
+        # 손실 계산 (negated mean_log_prob_pos)
+        loss = - (self.base_temperature / self.temperature) * mean_log_prob_pos.mean()
         
         return loss
 

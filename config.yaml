@@ -7,38 +7,57 @@ data:
 
 training:
     epochs: 50
-    batch_size: 320
+    batch_size: 512 # A100 80GB에 맞게 증가
     learning_rate: 0.0001
-    num_workers: 24
+    num_workers: 8 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
     save_dir: "./checkpoints"
     vis_dir: "./vis_results"
     early_stopping_patience: 5
     warmup_epochs: 5
+    eval_interval: 1 # 몇 에폭마다 평가할지
+    save_interval: 1 # 몇 에폭마다 체크포인트 저장할지
+    visualization_interval: 100 # 몇 스텝마다 시각화할지
+    log_interval: 10 # 몇 스텝마다 로그 기록할지
+    mixed_precision: true # 혼합 정밀도 사용
 
 model:
     backbone: "convnext_tiny"
     embed_dim: 512
-    checkpoint: "./checkpoints/neat-water-16/epoch_4.pth.tar"
-    resume: true
+    checkpoint: "" # 필요시 체크포인트 경로 지정
+    resume: false
     image_size: 384
     in_channels: 3
 
 loss:
     temperature: 0.07
-    hard_mining: true
-    memory_bank_size: 4096 # 메모리 뱅크 크기
+    hard_mining: true # 어려운 샘플에 더 집중하는 하드 마이닝 활성화
 
-use_wandb: True
+memory_bank:
+    enabled: true # 메모리 뱅크 활성화
+    size: 16384 # A100 80GB 메모리에 맞게 증가 (4096 -> 16384)
+    momentum: 0.99 # 메모리 뱅크 업데이트 모멘텀
+    start_epoch: 1 # 몇 에폭부터 메모리 뱅크 사용 시작할지
 
 optimizer:
-    type: "lars" # 빠른 수렴을 위한 LARS 옵티마이저 계속 사용
+    type: "lars" # 대규모 배치 학습에 효과적인 LARS 옵티마이저
     momentum: 0.9
     weight_decay: 1e-5
     trust_coefficient: 0.001
 
 augmentation:
-    color_jitter_strength: 0.5 # 더 강한 augmentation 적용
+    color_jitter_strength: 0.5
     use_random_resize_crop: true
-    min_scale: 0.85 # 원본 이미지에 더 가깝게 설정 (0.6 -> 0.85)
-    crop_ratio_range: [0.95, 1.05] # 거의 정사각형에 가까운 비율로 유지
+    min_scale: 0.85
+    crop_ratio_range: [0.95, 1.05]
+
+wandb:
+    enabled: true
+    project_name: "fashion-supcon-a100"
+    run_name: null # 자동 생성됨
+    tags: ["a100", "supcon", "memory-bank"]
+    # 상세 로깅 설정
+    log_model: true # 모델 가중치를 WandB에 로깅
+    log_gradients: true # 그라디언트 히스토그램 로깅
+    log_memory: true # 메모리 사용량 로깅
+    log_embedding_samples: 200 # 임베딩 시각화를 위한 샘플 수

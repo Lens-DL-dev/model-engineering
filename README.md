@@ -1,83 +1,201 @@
-# Lens-Dev 👁️
+# Fashion Image Retrieval with Supervised Contrastive Learning
 
-> 일반 영상정보(이미지)에 상품 정보를 찾는 로직
+> A100 GPU-optimized implementation for visual similarity search between worn fashion items and product images
 
-## Pipeline 설명
+## 📋 Overview
 
--   **[1차 처리] 이미지 임베딩**
+This project implements a state-of-the-art fashion image retrieval system using Supervised Contrastive Learning (SupCon). The system learns to align embeddings between **wearing images** (people wearing fashion items) and **product images** (catalog photos of fashion items), enabling accurate retrieval of products from worn item queries.
 
-    -   ConvNeXT 기반 모델로 착용 이미지를 임베딩화
+### Key Features
 
--   **[2차 처리] 벡터화 및 검색**
-    -   FAISS를 활용하여 미리 벡터화된 판매 이미지 DB에서 가장 유사한 제품을 검색
-    -   FAISS 관련 함수는 `build_faiss_index.py` 파일 참고
-    -   벡터 DB 생성 및 검색 관련 함수는 `build_faiss_index.py` 파일 참고
+-   **A100 GPU Optimization**: Fully optimized for NVIDIA A100 80GB GPUs with high-performance configurations
+-   **Memory Bank**: Enhanced contrastive learning using a large memory bank of embeddings (16K+)
+-   **Detailed Monitoring**: Comprehensive WandB integration for real-time training visualization
+-   **ConvNeXt Backbone**: State-of-the-art CNN architecture with various scaling options
+-   **Adaptive Hard Mining**: Focuses learning on the most challenging negative samples
 
-## 작업 수행 방식 (Train / Inference)
+## 🚀 Performance Optimizations
 
-1. 환경 마련
+The codebase is specifically optimized for high-performance training on A100 GPUs:
+
+-   **Large Batch Training**: Supports batch sizes of 512+ on A100 80GB GPUs
+-   **Mixed Precision**: Automatic FP16 training for increased throughput
+-   **Memory Bank**: 16K+ embedding memory bank for effective contrastive learning
+-   **Gradient Accumulation**: Optional accumulation for effectively larger batches
+-   **Gradient Checkpointing**: Memory-efficient backpropagation for larger models
+-   **LARS Optimizer**: Layer-adaptive learning rate scaling for large-batch training
+-   **Efficient Data Loading**: Optimized data loading pipeline with configurable workers
+
+## 🛠️ Requirements
+
+-   NVIDIA A100 GPU (80GB recommended)
+-   CUDA 11.0+
+-   8+ vCPUs
+-   125GB+ RAM
+
+### Python Dependencies
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-2. 데이터셋 준비
+Key dependencies:
 
-> [!IMPORTANT]
->
-> ### 사전 확인
->
-> `data` 폴더 내에 "구매 이미지" 는 product_images 폴더에, "착용 이미지" 는 wearing_images 폴더에 존재해야 함
+-   PyTorch 1.9+
+-   torchvision
+-   timm (for additional backbone options)
+-   LARS optimizer
+-   Weights & Biases
+-   tqdm
 
-3. 모델 학습
+## 📊 Dataset Structure
+
+The expected dataset structure:
+
+```
+dataset/
+├── wearing/          # Images of people wearing fashion items
+├── product/          # Product catalog images
+└── train_metainfo.json  # Metadata linking wearing and product images
+```
+
+The metainfo JSON should contain entries with:
+
+-   `wearing`: Path to wearing image
+-   One or more product identifiers (e.g., `main_top`, `bottom`, etc.)
+
+## 💻 Training
+
+### Configuration
+
+The training process is controlled through the `config.yaml` file. Key configurations:
+
+```yaml
+# Training settings
+training:
+    epochs: 50
+    batch_size: 512 # Optimized for A100 80GB
+    learning_rate: 1e-4
+    num_workers: 8
+    mixed_precision: true
+
+# Model settings
+model:
+    backbone: "convnext_tiny" # Options: tiny, small, base, large
+    embed_dim: 512
+    image_size: 384
+
+# Memory bank settings
+memory_bank:
+    enabled: true
+    size: 16384 # Optimized for A100 80GB
+    momentum: 0.99
+    start_epoch: 1
+
+# Monitoring settings
+wandb:
+    enabled: true
+    project_name: "fashion-supcon-a100"
+    log_gradients: true
+    log_memory: true
+    log_embedding_samples: 200
+```
+
+### Training Command
 
 ```bash
 python train.py --config config.yaml
 ```
 
-4. FAISS 인덱스 생성
-    > 여기서부터 일부 수정됨 / 추가 필요
+## 🔍 Key Components
 
-```bash
-python ./faiss/build_faiss_index.py
+### Memory Bank
+
+The memory bank significantly extends the effective batch size by storing and utilizing recent embedding samples:
+
+-   Maintains a queue of 16K+ normalized embeddings
+-   Uses momentum updates to stabilize learning
+-   Dramatically improves contrastive learning by providing more negative examples
+-   Configurable start epoch and momentum rate
+
+### WandB Monitoring
+
+Comprehensive real-time monitoring is integrated with Weights & Biases:
+
+-   **Training Metrics**: Loss, learning rate, top-k accuracy
+-   **Validation Metrics**: Recall@K, precision, normalized mAP
+-   **Visual Analysis**:
+    -   Embedding distance visualizations
+    -   Hard/easy sample identification
+    -   Top-K retrieval examples
+-   **System Monitoring**:
+    -   GPU memory usage
+    -   Gradient histograms
+    -   Embedding space visualization
+
+### Adaptive Hard Mining
+
+The loss function incorporates adaptive temperature scaling to focus on hard negative examples:
+
+-   Identifies and emphasizes hard negatives (similar but different products)
+-   Applies temperature scaling based on difficulty
+-   Improves separation in embedding space for challenging cases
+
+## 📁 Directory Structure
+
 ```
-
-5. 추론
-
-## 폴더 구조
-
-```bash
 .
-├── README.md
-├── config.yaml
-├── faiss
-│   ├── build_faiss_index.py
-│   └── search_faiss_index.py
-├── models
-│   └── convnext.py
-├── requirements.txt
-├── train.py
-└── utils
-    ├── config.py
-    ├── dataset.py
-    ├── losses.py
-    ├── metrics.py
-    └── visualization.py
+├── README.md              # Project documentation
+├── config.yaml            # Configuration file
+├── train.py               # Main training script
+├── models/
+│   └── convnext.py        # Model architecture definitions
+├── utils/
+│   ├── config.py          # Configuration loader
+│   ├── dataset.py         # Dataset and data loading utilities
+│   ├── losses.py          # Contrastive loss implementations
+│   ├── memory_bank.py     # Memory bank implementation
+│   ├── metrics.py         # Evaluation metrics
+│   ├── optimizers.py      # LARS optimizer
+│   └── visualization.py   # Visualization utilities
+├── inference/
+│   ├── build_index.py     # Vector database construction
+│   └── search.py          # Product retrieval functions
+└── requirements.txt       # Python dependencies
 ```
 
-## SimCLR 학습 방법
+## 📈 Evaluation and Inference
 
-SimCLR(Simple Framework for Contrastive Learning of Representations)은 비지도 학습 방식으로, 레이블 정보 없이 contrastive learning을 수행합니다.
+### Model Evaluation
 
-### SimCLR 학습 실행
+During training, the model is evaluated on a validation set measuring:
 
-```bash
-python train_simclr.py --config config_simclr.yaml
-```
+-   Loss on validation pairs
+-   Top-1/5/10 accuracy (retrieval performance)
+-   Visualization of embedding distances
 
-### SimCLR vs SupCon
+### Inference Pipeline
 
--   **SimCLR**: 각 이미지에 두 가지 다른 augmentation을 적용하여 positive pair 생성. 배치 내 다른 모든 샘플은 negative로 간주. 레이블 정보 사용하지 않음.
--   **SupCon**: 레이블 정보를 활용해 같은 클래스의 샘플들을 positive로 간주. 다른 클래스의 샘플들은 negative로 간주.
+After training, the typical workflow is:
+
+1. Generate product embeddings:
+
+    ```bash
+    python inference/build_index.py --model_path checkpoints/best_model.pth.tar --product_dir /path/to/products
+    ```
+
+2. Query with wearing images:
+    ```bash
+    python inference/search.py --query_image /path/to/query.jpg --top_k 5
+    ```
+
+## 🔗 References
+
+-   [Supervised Contrastive Learning (SupCon)](https://arxiv.org/abs/2004.11362)
+-   [ConvNeXt Architecture](https://arxiv.org/abs/2201.03545)
+-   [LARS Optimizer](https://arxiv.org/abs/1708.03888)
+
+## 📝 License
+
+[MIT License](LICENSE)
