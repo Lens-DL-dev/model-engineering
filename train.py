@@ -9,6 +9,9 @@ from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 import wandb
 from timm.utils import ModelEmaV2
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+from torch.optim.lr_scheduler import SequentialLR
 
 # 내부 모듈
 from utils.config import load_config
@@ -17,6 +20,8 @@ from utils.losses import SupConLoss
 from utils.metrics import compute_topk_accuracy
 from utils.visualization import save_contrastive_matrix, save_topk_image_samples
 from models.convnext import ConvNextModel
+from utils.optimizers import LARS
+from utils.memory_bank import MemoryBank
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
@@ -119,13 +124,36 @@ def main():
     
     # 5. Loss & Optimizer
     criterion = SupConLoss(temperature=temperature)
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+    optimizer = LARS(
+        model.parameters(),
+        lr=lr,
+        momentum=0.9,
+        weight_decay=1e-5,
+        trust_coefficient=0.001,
+        exclude_bias_and_norm=True
+    )
     scaler = GradScaler()
     
     # 6. Resume Checkpoint (옵션)
     start_epoch = 0
     if resume and checkpoint_path:
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
+    
+    # 메모리 뱅크 초기화
+    memory_bank_size = config.get('memory_bank_size', 4096)
+    memory_bank = MemoryBank(size=memory_bank_size, dim=embed_dim, device=device)
+    
+    # 옵티마이저 설정 후
+    # 웜업 + 코사인 어닐링 스케줄러 설정
+    warmup_epochs = config['training'].get('warmup_epochs', 5)
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, 
+                               total_iters=warmup_epochs * len(train_loader))
+    cosine_scheduler = CosineAnnealingLR(optimizer, 
+                                        T_max=(epochs - warmup_epochs) * len(train_loader),
+                                        eta_min=1e-6)
+    scheduler = SequentialLR(optimizer, 
+                             schedulers=[warmup_scheduler, cosine_scheduler],
+                             milestones=[warmup_epochs * len(train_loader)])
     
     # 7. Training Loop
     print("===== Training Start =====")
@@ -143,17 +171,33 @@ def main():
             with autocast(device_type='cuda', dtype=torch.float16):
                 emb_wearing = model(wearing_imgs)  # [B, D]
                 emb_product = model(product_imgs)  # [B, D]
+                
                 # 두 view를 concat하여 (2B, D) 임베딩 생성
                 embeddings = torch.cat([emb_wearing, emb_product], dim=0)
-                loss = criterion(embeddings, product_codes)
+                
+                # 메모리 뱅크 활용 (첫 에포크는 메모리뱅크 구축 단계이므로 사용 안함)
+                if epoch > 0:
+                    memory_embs, memory_codes = memory_bank.get()
+                    if len(memory_codes) > 0:
+                        loss = criterion(embeddings, product_codes, memory_embs, memory_codes)
+                    else:
+                        loss = criterion(embeddings, product_codes)
+                else:
+                    loss = criterion(embeddings, product_codes)
+                
                 loss = loss / grad_acc_steps
             
             scaler.scale(loss).backward()
             if (i + 1) % grad_acc_steps == 0:
                 scaler.step(optimizer)
                 scaler.update()
+                scheduler.step()  # 스케줄러 업데이트 추가
                 optimizer.zero_grad(set_to_none=True)
                 update_ema(ema, model)
+            
+            # 메모리 뱅크 업데이트 (product_imgs의 임베딩만 사용)
+            with torch.no_grad():
+                memory_bank.enqueue_and_dequeue(F.normalize(emb_product, dim=1), product_codes)
             
             current_loss = loss.item() * grad_acc_steps
             running_loss += current_loss

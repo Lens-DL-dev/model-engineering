@@ -1,0 +1,37 @@
+data:
+    train_dir: "/workspace/dataset/output/dataset"
+    train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
+    val_dir: "/workspace/dataset/output/dataset"
+    val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
+    max_samples: -1
+    val_max_samples: -1
+
+training:
+    epochs: 100
+    batch_size: 256
+    learning_rate: 0.0003
+    num_workers: 32
+    gradient_accumulation_steps: 1
+    save_dir: "./checkpoints_simclr"
+    vis_dir: "./vis_results_simclr"
+    early_stopping_patience: 10
+    warmup_epochs: 10
+
+model:
+    backbone: "convnext_tiny"
+    embed_dim: 512
+    checkpoint: ""
+    resume: false
+    image_size: 384
+    in_channels: 3
+
+loss:
+    temperature: 0.1
+
+use_wandb: True
+
+optimizer:
+    type: "lars"
+    momentum: 0.9
+    weight_decay: 1e-5
+    trust_coefficient: 0.001
