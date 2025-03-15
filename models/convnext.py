@@ -152,3 +152,65 @@ class ConvNextModel(nn.Module):
             with torch.no_grad():
                 return self.forward(images)
         return extract_fn
+
+class TwoTowerModel(nn.Module):
+    """
+    Two-Tower 구조:
+      - tower_wear: 착용 이미지를 위한 인코더
+      - tower_prod: 상품 이미지를 위한 인코더
+    
+    각 타워는 독립적인 ConvNextModel로 구성되어 있으며, 
+    입력 이미지 도메인에 특화된 임베딩을 학습할 수 있습니다.
+    """
+    def __init__(self, backbone_wear="convnext_tiny", backbone_prod="convnext_tiny",
+                 pretrained=True, embed_dim=512, use_timm=False):
+        super().__init__()
+        self.tower_wear = ConvNextModel(backbone=backbone_wear, pretrained=pretrained, 
+                                        embed_dim=embed_dim, use_timm=use_timm)
+        self.tower_prod = ConvNextModel(backbone=backbone_prod, pretrained=pretrained, 
+                                        embed_dim=embed_dim, use_timm=use_timm)
+
+    def forward(self, wear_img=None, prod_img=None):
+        """
+        착용 이미지와 상품 이미지 모두 혹은 하나만 입력 가능
+        
+        Args:
+            wear_img: 착용 이미지 텐서, shape [B, C, H, W]
+            prod_img: 상품 이미지 텐서, shape [B, C, H, W]
+            
+        Returns:
+            emb_wear: 착용 이미지 임베딩 (wear_img가 제공된 경우)
+            emb_prod: 상품 이미지 임베딩 (prod_img가 제공된 경우)
+        """
+        emb_wear, emb_prod = None, None
+        
+        if wear_img is not None:
+            emb_wear = self.tower_wear(wear_img)   # (B, embed_dim)
+        
+        if prod_img is not None:
+            emb_prod = self.tower_prod(prod_img)   # (B, embed_dim)
+            
+        if wear_img is not None and prod_img is not None:
+            return emb_wear, emb_prod
+        elif wear_img is not None:
+            return emb_wear
+        else:
+            return emb_prod
+    
+    def get_tower_wear(self):
+        """착용 이미지 타워만 반환"""
+        return self.tower_wear
+    
+    def get_tower_prod(self):
+        """상품 이미지 타워만 반환"""
+        return self.tower_prod
+    
+    def freeze_tower_wear(self, freeze=True):
+        """착용 이미지 타워 고정/해제"""
+        for param in self.tower_wear.parameters():
+            param.requires_grad = not freeze
+    
+    def freeze_tower_prod(self, freeze=True):
+        """상품 이미지 타워 고정/해제"""
+        for param in self.tower_prod.parameters():
+            param.requires_grad = not freeze 

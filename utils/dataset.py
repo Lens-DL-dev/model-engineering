@@ -62,15 +62,15 @@ class ContrastiveFashionDataset(Dataset):
             # 색상 변환은 그대로 유지
             wearing_transforms.extend([
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomApply([
-                    transforms.ColorJitter(
-                        brightness=jitter_strength, 
-                        contrast=jitter_strength, 
-                        saturation=jitter_strength, 
-                        hue=jitter_strength/4)
-                ], p=0.8),
-                transforms.RandomGrayscale(p=0.2),
-                transforms.GaussianBlur(kernel_size=int(0.1 * image_size)),
+                # transforms.RandomApply([
+                #     transforms.ColorJitter(
+                #         brightness=jitter_strength, 
+                #         contrast=jitter_strength, 
+                #         saturation=jitter_strength, 
+                #         hue=jitter_strength/4)
+                # ], p=0.8),
+                # transforms.RandomGrayscale(p=0.2),
+                # transforms.GaussianBlur(kernel_size=int(0.1 * image_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                     std=[0.229, 0.224, 0.225]),
@@ -181,13 +181,13 @@ class SimCLRFashionDataset(Dataset):
         self.transform = transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([
-                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-            ], p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([
-                transforms.GaussianBlur((3, 3), (1.0, 2.0))
-            ], p=0.5),
+            # transforms.RandomApply([
+            #     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+            # ], p=0.8),
+            # transforms.RandomGrayscale(p=0.2),
+            # transforms.RandomApply([
+            #     transforms.GaussianBlur((3, 3), (1.0, 2.0))
+            # ], p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                 std=[0.229, 0.224, 0.225])

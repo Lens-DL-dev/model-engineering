@@ -15,11 +15,12 @@ from torch.optim.lr_scheduler import SequentialLR
 import numpy as np
 import gc
 from collections import defaultdict
+from torch.optim import AdamW
 
 # 내부 모듈
 from utils.config import load_config
 from utils.dataset import ContrastiveFashionDataset, collate_fn_supcon
-from utils.losses import SupConLoss
+from utils.losses import SupConLoss, MarginSupConLoss
 from utils.metrics import compute_topk_accuracy
 from utils.visualization import save_contrastive_matrix, save_topk_image_samples
 from models.convnext import ConvNextModel
@@ -81,13 +82,16 @@ def log_embedding_samples(embeddings, labels, step, title="embeddings"):
     # 최대 200개 샘플만 사용
     max_samples = min(200, embeddings.shape[0])
     embedding_data = embeddings[:max_samples].cpu().numpy()
-    metadata = [{"label": label} for label in labels[:max_samples]]
+    labels_data = labels[:max_samples]
     
-    # 임베딩 시각화 로깅
+    # Table을 통한 임베딩 데이터 로깅
+    columns = ["label"] + [f"d{i}" for i in range(embedding_data.shape[1])]
+    data = [[labels_data[i]] + embedding_data[i].tolist() for i in range(len(labels_data))]
+    
     wandb.log({
-        f"{title}": wandb.Table(
-            columns=["embedding", "label"],
-            data=[[wandb.Embedding(embedding, metadata=metadata[i]), labels[i]] for i, embedding in enumerate(embedding_data)]
+        f"{title}_table": wandb.Table(
+            columns=columns,
+            data=data
         )
     }, step=step)
 
@@ -132,7 +136,7 @@ def main():
     visualization_interval = config['training'].get('visualization_interval', 100)
     log_interval = config['training'].get('log_interval', 10)
     
-    # 모델 설정
+    # 모델 설정 - 단일 ConvNextModel 사용으로 수정
     backbone = config['model'].get('backbone', 'convnext_tiny')
     embed_dim = config['model'].get('embed_dim', 512)
     checkpoint_path = config['model'].get('checkpoint', "")
@@ -210,8 +214,13 @@ def main():
         pin_memory=True
     )
     
-    # 4. Model (ConvNeXt 기반)
-    model = ConvNextModel(backbone=backbone, pretrained=True, embed_dim=embed_dim).to(device)
+    # 4. 단일 ConvNextModel 모델 초기화
+    model = ConvNextModel(
+        backbone=backbone,
+        pretrained=True,
+        embed_dim=embed_dim
+    ).to(device)
+    
     ema = ModelEmaV2(model, decay=0.999)
     
     # WandB에 모델 아키텍처 로깅
@@ -219,14 +228,13 @@ def main():
         wandb.watch(model, log="all", log_freq=100)
     
     # 5. Loss & Optimizer
-    criterion = SupConLoss(temperature=temperature, hard_mining=hard_mining)
-    optimizer = LARS(
+    criterion = MarginSupConLoss(temperature=temperature, margin=0.3, hard_mining=True)
+    
+    # LARS 대신 AdamW 사용
+    optimizer = AdamW(
         model.parameters(),
         lr=lr,
-        momentum=config['optimizer'].get('momentum', 0.9),
-        weight_decay=config['optimizer'].get('weight_decay', 1e-5),
-        trust_coefficient=config['optimizer'].get('trust_coefficient', 0.001),
-        exclude_bias_and_norm=True
+        weight_decay=float(config['optimizer'].get('weight_decay', 1e-5))
     )
     
     # Mixed precision 설정
@@ -235,7 +243,9 @@ def main():
     # 6. Resume Checkpoint (옵션)
     start_epoch = 0
     if resume and checkpoint_path:
-        start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
+        checkpoint_epoch = load_checkpoint(model, optimizer, checkpoint_path)
+        print(f"모델 가중치는 에폭 {checkpoint_epoch}에서 로드했지만, 에폭 카운터는 0으로 재설정합니다.")
+        # start_epoch = checkpoint_epoch  # 이 줄을 주석 처리하거나 삭제
     
     # 7. 메모리 뱅크 초기화
     memory_bank = MemoryBank(
@@ -245,8 +255,7 @@ def main():
         momentum=memory_bank_momentum
     )
     
-    # 8. 옵티마이저 설정 후
-    # 웜업 + 코사인 어닐링 스케줄러 설정
+    # 8. 웜업 + 코사인 어닐링 스케줄러 설정
     warmup_epochs = config['training'].get('warmup_epochs', 5)
     warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, 
                                total_iters=warmup_epochs * len(train_loader))
@@ -272,6 +281,13 @@ def main():
     print("==============================\n")
     
     global_step = 0
+    print(f"Starting training from epoch {start_epoch} to {epochs}")
+    print(f"Memory bank enabled: {use_memory_bank}, size: {memory_bank_size}")
+    print(f"Using criterion: {criterion.__class__.__name__}")
+
+    # 첫 배치 처리 시작 전 로그 추가
+    print("Processing first batch...")
+    
     for epoch in range(start_epoch, epochs):
         model.train()
         running_loss = 0.0
@@ -294,7 +310,8 @@ def main():
             wearing_imgs = wearing_imgs.to(device, non_blocking=True)
             product_imgs = product_imgs.to(device, non_blocking=True)
             
-            with autocast(enabled=mixed_precision):
+            with autocast(device_type='cuda', enabled=mixed_precision):
+                # 단일 모델로 각 이미지를 별도로 처리 (원래 old_train 방식과 동일)
                 emb_wearing = model(wearing_imgs)  # [B, D]
                 emb_product = model(product_imgs)  # [B, D]
                 
@@ -391,14 +408,6 @@ def main():
                         wearing_imgs, product_imgs, emb_wearing, emb_product,
                         k=5, distance_metric='cosine', out_dir=current_vis_dir
                     )
-                
-                # WandB에 시각화 결과 업로드
-                if use_wandb:
-                    wandb.log({
-                        "visualization/dist_matrix": wandb.Image(os.path.join(current_vis_dir, "dist_plot.png")),
-                        "visualization/top_samples": [wandb.Image(os.path.join(current_vis_dir, f)) 
-                                                     for f in os.listdir(current_vis_dir) if f != "dist_plot.png"]
-                    }, step=global_step)
         
         # 에폭 단위 메트릭 계산
         samples_seen = len(train_loader) * batch_size
@@ -430,7 +439,7 @@ def main():
                     val_wearing = val_wearing.to(device)
                     val_product = val_product.to(device)
                     
-                    # 모델 출력
+                    # 단일 모델로 각 이미지를 별도로 처리
                     emb_wearing = model(val_wearing)
                     emb_product = model(val_product)
                     
@@ -451,15 +460,6 @@ def main():
             topk_acc = compute_topk_accuracy(query_emb, candidate_emb, topk=(1,5,10))
             print(f"[Val] Epoch {epoch+1} - Loss: {val_loss:.4f}, ", end="")
             print(f"Top1: {topk_acc[1]:.2f}%, Top5: {topk_acc[5]:.2f}%, Top10: {topk_acc[10]:.2f}%")
-            
-            # 임베딩 시각화 (WandB)
-            if use_wandb and wandb_config.get('log_embedding_samples', 0) > 0:
-                log_embedding_samples(
-                    query_emb[:wandb_config.get('log_embedding_samples')],
-                    all_product_codes[:wandb_config.get('log_embedding_samples')],
-                    global_step,
-                    "val_embeddings"
-                )
             
             # WandB 검증 로깅
             if use_wandb:

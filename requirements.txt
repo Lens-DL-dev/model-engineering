@@ -4,3 +4,7 @@ scikit-learn
 tqdm
 transformers
 wandb
+torch
+torchvision
+timm
+numpy

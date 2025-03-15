@@ -1,20 +1,20 @@
 data:
-    train_dir: "/workspace/dataset/output/dataset"
-    train_metainfo_path: "/workspace/dataset/output/dataset/train_metainfo.json"
-    val_dir: "/workspace/dataset/output/dataset"
-    val_metainfo_path: "/workspace/dataset/output/dataset/val_metainfo.json"
+    train_dir: "/workspace/dataset"
+    train_metainfo_path: "/workspace/dataset/train_metainfo.json"
+    val_dir: "/workspace/dataset"
+    val_metainfo_path: "/workspace/dataset/val_metainfo.json"
     n_mask_channels: 0
 
 training:
-    epochs: 50
-    batch_size: 512 # A100 80GB에 맞게 증가
-    learning_rate: 0.0001
-    num_workers: 8 # vCPU 8개에 맞춤
+    epochs: 60  # 43보다 충분히 큰 값으로 설정
+    batch_size: 1024  
+    learning_rate: 0.0001    # 더 낮은 학습률
+    num_workers: 4 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
     save_dir: "./checkpoints"
     vis_dir: "./vis_results"
-    early_stopping_patience: 5
-    warmup_epochs: 5
+    # early_stopping_patience: 5
+    warmup_epochs: 1         # 더 짧은 웜업
     eval_interval: 1 # 몇 에폭마다 평가할지
     save_interval: 1 # 몇 에폭마다 체크포인트 저장할지
     visualization_interval: 100 # 몇 스텝마다 시각화할지
@@ -22,40 +22,42 @@ training:
     mixed_precision: true # 혼합 정밀도 사용
 
 model:
-    backbone: "convnext_tiny"
+    backbone: "convnext_tiny"  # 단일 모델 백본
     embed_dim: 512
-    checkpoint: "" # 필요시 체크포인트 경로 지정
-    resume: false
+    checkpoint: "/workspace/train/checkpoints/visionary-monkey-18/best_model.pth.tar"  # 체크포인트 경로 설정
+    resume: true  # 이어서 학습하도록 true로 설정
     image_size: 384
     in_channels: 3
 
 loss:
     temperature: 0.07
-    hard_mining: true # 어려운 샘플에 더 집중하는 하드 마이닝 활성화
+    hard_mining: true
 
 memory_bank:
-    enabled: true # 메모리 뱅크 활성화
-    size: 16384 # A100 80GB 메모리에 맞게 증가 (4096 -> 16384)
-    momentum: 0.99 # 메모리 뱅크 업데이트 모멘텀
-    start_epoch: 1 # 몇 에폭부터 메모리 뱅크 사용 시작할지
+    enabled: true  # 메모리 뱅크 활성화
+    size: 8192 # 더 큰 사이즈로 설정
+    momentum: 0.99
+    start_epoch: 0 # 즉시 사용 시작
 
 optimizer:
-    type: "lars" # 대규모 배치 학습에 효과적인 LARS 옵티마이저
-    momentum: 0.9
+    type: "AdamW"  # LARS 대신 AdamW 사용
     weight_decay: 1e-5
-    trust_coefficient: 0.001
 
 augmentation:
-    color_jitter_strength: 0.5
+    color_jitter_strength: 0.6
     use_random_resize_crop: true
-    min_scale: 0.85
-    crop_ratio_range: [0.95, 1.05]
+    min_scale: 0.65
+    crop_ratio_range: [0.85, 1.15]
+    use_random_erasing: true
+    erasing_prob: 0.3
+    use_gaussian_blur: true
+    blur_prob: 0.2
 
 wandb:
     enabled: true
     project_name: "fashion-supcon-a100"
     run_name: null # 자동 생성됨
-    tags: ["a100", "supcon", "memory-bank"]
+    tags: ["a100", "supcon", "single-model"]
     # 상세 로깅 설정
     log_model: true # 모델 가중치를 WandB에 로깅
     log_gradients: true # 그라디언트 히스토그램 로깅
