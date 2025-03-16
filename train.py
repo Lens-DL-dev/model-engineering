@@ -23,7 +23,7 @@ from utils.dataset import ContrastiveFashionDataset, collate_fn_supcon
 from utils.losses import SupConLoss, MarginSupConLoss
 from utils.metrics import compute_topk_accuracy
 from utils.visualization import save_contrastive_matrix, save_topk_image_samples
-from models.convnext import ConvNextModel
+from models.convnext import TwoTowerModel
 from utils.optimizers import LARS
 from utils.memory_bank import MemoryBank
 
@@ -136,13 +136,15 @@ def main():
     visualization_interval = config['training'].get('visualization_interval', 100)
     log_interval = config['training'].get('log_interval', 10)
     
-    # 모델 설정 - 단일 ConvNextModel 사용으로 수정
-    backbone = config['model'].get('backbone', 'convnext_tiny')
+    # 모델 설정 - Two Tower 모델 사용으로 수정
+    backbone_wear = config['model'].get('backbone_wear', 'convnext_tiny')
+    backbone_prod = config['model'].get('backbone_prod', 'convnext_tiny')
     embed_dim = config['model'].get('embed_dim', 512)
     checkpoint_path = config['model'].get('checkpoint', "")
     resume = config['model'].get('resume', False)
     image_size = config['model'].get('image_size', 384)
     in_channels = config['model'].get('in_channels', 3)
+    use_timm = config['model'].get('use_timm', False)
     
     # 메모리 뱅크 설정
     memory_bank_config = config.get('memory_bank', {})
@@ -214,11 +216,13 @@ def main():
         pin_memory=True
     )
     
-    # 4. 단일 ConvNextModel 모델 초기화
-    model = ConvNextModel(
-        backbone=backbone,
+    # 4. Two Tower 모델 초기화
+    model = TwoTowerModel(
+        backbone_wear=backbone_wear,
+        backbone_prod=backbone_prod,
         pretrained=True,
-        embed_dim=embed_dim
+        embed_dim=embed_dim,
+        use_timm=use_timm
     ).to(device)
     
     ema = ModelEmaV2(model, decay=0.999)
@@ -273,7 +277,7 @@ def main():
     
     # 10. 학습 시작
     print("\n===== Training Start =====")
-    print(f"Model: {backbone}, Embed dim: {embed_dim}, Batch size: {batch_size}")
+    print(f"Model: Two Tower ({backbone_wear}, {backbone_prod}), Embed dim: {embed_dim}, Batch size: {batch_size}")
     print(f"Learning rate: {lr}, Temperature: {temperature}")
     print(f"Mixed precision: {mixed_precision}, Memory bank: {use_memory_bank} (size: {memory_bank_size})")
     print(f"Epochs: {epochs}, Warmup epochs: {warmup_epochs}, Grad acc steps: {grad_acc_steps}")
@@ -311,12 +315,11 @@ def main():
             product_imgs = product_imgs.to(device, non_blocking=True)
             
             with autocast(device_type='cuda', enabled=mixed_precision):
-                # 단일 모델로 각 이미지를 별도로 처리 (원래 old_train 방식과 동일)
-                emb_wearing = model(wearing_imgs)  # [B, D]
-                emb_product = model(product_imgs)  # [B, D]
+                # Two Tower 모델을 사용하여 각 이미지를 처리
+                emb_wearing, emb_prod = model(wearing_imgs, product_imgs)
                 
                 # 두 view를 concat하여 (2B, D) 임베딩 생성
-                embeddings = torch.cat([emb_wearing, emb_product], dim=0)
+                embeddings = torch.cat([emb_wearing, emb_prod], dim=0)
                 
                 # 메모리 뱅크 활용
                 if use_memory_bank_this_epoch:
@@ -358,14 +361,14 @@ def main():
             # 메모리 뱅크 업데이트 (product_imgs의 임베딩만 사용)
             if use_memory_bank:
                 with torch.no_grad():
-                    memory_bank.enqueue_and_dequeue(F.normalize(emb_product, dim=1), product_codes)
+                    memory_bank.enqueue_and_dequeue(F.normalize(emb_prod, dim=1), product_codes)
             
             current_loss = loss.item() * grad_acc_steps
             running_loss += current_loss
             
             # 배치 단위 retrieval 평가 (wearing_imgs vs product_imgs)
             with torch.no_grad():
-                batch_topk = compute_topk_accuracy(emb_wearing, emb_product, topk=(1,5,10))
+                batch_topk = compute_topk_accuracy(emb_wearing, emb_prod, topk=(1,5,10))
                 for k, v in batch_topk.items():
                     running_metrics[f"top{k}"] += v * batch_size_actual
             
@@ -400,12 +403,12 @@ def main():
                 
                 with torch.no_grad():
                     save_contrastive_matrix(
-                        emb_wearing, emb_product, None,
+                        emb_wearing, emb_prod, None,
                         save_path=os.path.join(current_vis_dir, "dist_plot.png"),
                         distance_metric='cosine', margin=None
                     )
                     save_topk_image_samples(
-                        wearing_imgs, product_imgs, emb_wearing, emb_product,
+                        wearing_imgs, product_imgs, emb_wearing, emb_prod,
                         k=5, distance_metric='cosine', out_dir=current_vis_dir
                     )
         
@@ -439,9 +442,8 @@ def main():
                     val_wearing = val_wearing.to(device)
                     val_product = val_product.to(device)
                     
-                    # 단일 모델로 각 이미지를 별도로 처리
-                    emb_wearing = model(val_wearing)
-                    emb_product = model(val_product)
+                    # Two Tower 모델로 각 이미지를 개별 인코더로 처리
+                    emb_wearing, emb_product = model(val_wearing, val_product)
                     
                     # SupCon Loss 계산
                     embeddings = torch.cat([emb_wearing, emb_product], dim=0)

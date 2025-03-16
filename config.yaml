@@ -6,15 +6,15 @@ data:
     n_mask_channels: 0
 
 training:
-    epochs: 60  # 43보다 충분히 큰 값으로 설정
-    batch_size: 1024  
-    learning_rate: 0.0001    # 더 낮은 학습률
+    epochs: 100 # 43보다 충분히 큰 값으로 설정
+    batch_size: 1024
+    learning_rate: 0.001    #
     num_workers: 4 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
     save_dir: "./checkpoints"
     vis_dir: "./vis_results"
     # early_stopping_patience: 5
-    warmup_epochs: 1         # 더 짧은 웜업
+    warmup_epochs: 5         # 더 짧은 웜업
     eval_interval: 1 # 몇 에폭마다 평가할지
     save_interval: 1 # 몇 에폭마다 체크포인트 저장할지
     visualization_interval: 100 # 몇 스텝마다 시각화할지
@@ -22,19 +22,21 @@ training:
     mixed_precision: true # 혼합 정밀도 사용
 
 model:
-    backbone: "convnext_tiny"  # 단일 모델 백본
+    backbone_wear: "convnext_tiny"  # 착용 이미지용 백본
+    backbone_prod: "convnext_tiny"  # 상품 이미지용 백본
     embed_dim: 512
-    checkpoint: "/workspace/train/checkpoints/visionary-monkey-18/best_model.pth.tar"  # 체크포인트 경로 설정
-    resume: true  # 이어서 학습하도록 true로 설정
+    checkpoint: "/workspace/train/checkpoints/visionary-monkey-18/best_model.pth.tar"
+    resume: false
     image_size: 384
     in_channels: 3
+    use_timm: false
 
 loss:
     temperature: 0.07
-    hard_mining: true
+    hard_mining: false
 
 memory_bank:
-    enabled: true  # 메모리 뱅크 활성화
+    enabled: false  # 메모리 뱅크 활성화
     size: 8192 # 더 큰 사이즈로 설정
     momentum: 0.99
     start_epoch: 0 # 즉시 사용 시작
