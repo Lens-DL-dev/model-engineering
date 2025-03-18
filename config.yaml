@@ -3,17 +3,19 @@ data:
     train_metainfo_path: "/workspace/dataset/train_metainfo.json"
     val_dir: "/workspace/dataset"
     val_metainfo_path: "/workspace/dataset/val_metainfo.json"
+    brandinfo_path: "/workspace/dataset/brandInfo.json"
+    metainfo_path: "/workspace/dataset/metainfo.json"
     n_mask_channels: 0
 
 training:
     epochs: 100 # 43보다 충분히 큰 값으로 설정
     batch_size: 1024
-    learning_rate: 0.001    #
+    learning_rate: 0.001    
     num_workers: 4 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
     save_dir: "./checkpoints"
     vis_dir: "./vis_results"
-    # early_stopping_patience: 5
+    early_stopping_patience: 10
     warmup_epochs: 5         # 더 짧은 웜업
     eval_interval: 1 # 몇 에폭마다 평가할지
     save_interval: 1 # 몇 에폭마다 체크포인트 저장할지

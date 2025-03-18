@@ -104,8 +104,12 @@ class ContrastiveFashionDataset(Dataset):
             if wearing_filename is None:
                 continue
             wearing_path = os.path.join(root_dir, "wearing", wearing_filename)
-            # 우선순위: hat, main_top, inner_top, bottom, shoes
-            product_categories = ["hat", "main_top", "inner_top", "bottom", "shoes"]
+            
+            # 새로운 카테고리 우선순위 리스트
+            product_categories = [
+                "Hat", "Sunglasses", "Upper-clothes", "Skirt", 
+                "Pants", "Dress", "Shoes", "Bag", "Scarf"
+            ]
             product_code = None
             for cat in product_categories:
                 if info.get(cat) is not None:
