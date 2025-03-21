@@ -22,7 +22,7 @@ from utils.config import load_config
 from utils.dataset import ContrastiveFashionDataset, collate_fn_supcon
 from utils.losses import SupConLoss, MarginSupConLoss
 from utils.metrics import compute_topk_accuracy
-from utils.visualization import save_contrastive_matrix, save_topk_image_samples
+from utils.visualization import save_contrastive_matrix, save_topk_image_samples, save_tsne_visualization
 from models.convnext import TwoTowerModel
 from utils.optimizers import LARS
 from utils.memory_bank import MemoryBank
@@ -232,7 +232,7 @@ def main():
         wandb.watch(model, log="all", log_freq=100)
     
     # 5. Loss & Optimizer
-    criterion = MarginSupConLoss(temperature=temperature, margin=0.3, hard_mining=True)
+    criterion = MarginSupConLoss(temperature=temperature, margin=0.3, hard_mining=hard_mining)
     
     # LARS 대신 AdamW 사용
     optimizer = AdamW(
@@ -524,6 +524,68 @@ def main():
         # 메모리 정리
         torch.cuda.empty_cache()
         gc.collect()
+        
+        # t-SNE 시각화 - 훈련 임베딩과 검증 임베딩 비교
+        if (epoch + 1) % eval_interval == 0:
+            # 훈련 데이터에서 임베딩 샘플 수집
+            train_sample_embs = []
+            train_sample_labels = []
+            model.eval()  # 평가 모드로 전환
+            
+            with torch.no_grad():
+                # 훈련 데이터에서 일부 샘플만 사용
+                sample_loader = DataLoader(
+                    train_dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    num_workers=num_workers,
+                    drop_last=False,
+                    collate_fn=collate_fn_supcon,
+                    pin_memory=True
+                )
+                
+                # 최대 1000개 샘플만 사용
+                for i, (sample_wearing, sample_product, sample_codes) in enumerate(sample_loader):
+                    if i >= 5:  # 약 5개 배치 (5 * batch_size)
+                        break
+                        
+                    sample_wearing = sample_wearing.to(device)
+                    sample_product = sample_product.to(device)
+                    
+                    # 임베딩 생성
+                    emb_wearing, emb_product = model(sample_wearing, sample_product)
+                    
+                    # 둘 중 하나만 사용하거나 둘 다 사용 가능
+                    train_sample_embs.append(emb_wearing.detach())
+                    train_sample_labels.extend(sample_codes)
+            
+            # 훈련 및 검증 임베딩 준비
+            train_embs = torch.cat(train_sample_embs, dim=0)
+            val_embs = query_emb  # 이미 수집된 검증 임베딩
+            
+            # t-SNE 시각화 생성
+            tsne_save_path = os.path.join(vis_dir, f"tsne_epoch_{epoch+1}.png")
+            
+            # 데이터셋 임베딩 리스트 
+            embeddings_list = [train_embs, val_embs]
+            labels_list = [train_sample_labels, all_product_codes]
+            dataset_names = ['Train', 'Validation']
+            
+            save_tsne_visualization(
+                embeddings_list=embeddings_list,
+                labels_list=labels_list,
+                dataset_names=dataset_names,
+                save_path=tsne_save_path,
+                perplexity=min(30, len(train_embs) // 5),  # 적절한 perplexity 설정
+                n_components=2,  # 2D 또는 3D 선택
+                title=f"t-SNE Visualization (Epoch {epoch+1})"
+            )
+            
+            # 필요하다면 WandB에 시각화 로깅
+            if use_wandb:
+                wandb.log({
+                    "visualizations/tsne": wandb.Image(tsne_save_path)
+                }, step=global_step)
     
     print("\n===== Training Complete =====")
     print(f"Best Top1: {best_top1:.2f}% at epoch {best_epoch}")

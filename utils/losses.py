@@ -86,52 +86,6 @@ class SupConLoss(nn.Module):
         return loss
 
 
-class SimCLRLoss(nn.Module):
-    """
-    SimCLR Loss (Chen et al., 2020)
-    비지도 대조 학습을 위한 손실 함수.
-    
-    입력: embeddings (2B, D) - 두 view를 concat한 결과
-          첫 B개는 첫 번째 augmentation view, 다음 B개는 두 번째 augmentation view
-    
-    아이디어: (i, i+B)는 positive pair, 나머지 모든 쌍은 negative pair로 간주
-    """
-    def __init__(self, temperature=0.07):
-        super().__init__()
-        self.temperature = temperature
-        self.criterion = nn.CrossEntropyLoss(reduction="mean")
-        
-    def forward(self, embeddings):
-        """
-        embeddings: 정규화된 임베딩 tensor, shape: [2*batch_size, D]
-        """
-        device = embeddings.device
-        batch_size = embeddings.shape[0] // 2
-        
-        # similarity matrix 계산
-        # sim_matrix[i][j]: i번째 임베딩과 j번째 임베딩의 코사인 유사도
-        sim_matrix = torch.mm(embeddings, embeddings.T) / self.temperature
-        
-        # 자기 자신과의 유사도는 학습에서 제외
-        sim_matrix.fill_diagonal_(-float('inf'))
-        
-        # positive pair의 인덱스를 계산: (i, i+B) 쌍과 (i+B, i) 쌍
-        pos_indices = torch.arange(batch_size, device=device)
-        pos_indices_1 = pos_indices
-        pos_indices_2 = pos_indices + batch_size
-        
-        # 각 샘플의 positive pair 인덱스
-        labels_1 = pos_indices_2  # 첫 번째 batch의 각 샘플에 대한 positive 인덱스는 i+B
-        labels_2 = pos_indices_1  # 두 번째 batch의 각 샘플에 대한 positive 인덱스는 i
-        
-        # 전체 라벨 tensor 구성 (2B,)
-        labels = torch.cat([labels_1, labels_2], dim=0)
-        
-        # loss 계산: CrossEntropy(-log(exp(sim_pos) / sum(exp(sim_all))))
-        loss = self.criterion(sim_matrix, labels)
-        
-        return loss
-
 class MarginSupConLoss(nn.Module):
     def __init__(self, temperature=0.07, margin=0.3, hard_mining=True):
         super().__init__()

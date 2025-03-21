@@ -10,12 +10,12 @@ data:
 training:
     epochs: 100 # 43보다 충분히 큰 값으로 설정
     batch_size: 1024
-    learning_rate: 0.001    
-    num_workers: 4 # vCPU 8개에 맞춤
+    learning_rate: 0.0001    
+    num_workers: 6 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
     save_dir: "./checkpoints"
     vis_dir: "./vis_results"
-    early_stopping_patience: 10
+    early_stopping_patience: 5
     warmup_epochs: 5         # 더 짧은 웜업
     eval_interval: 1 # 몇 에폭마다 평가할지
     save_interval: 1 # 몇 에폭마다 체크포인트 저장할지
@@ -24,9 +24,9 @@ training:
     mixed_precision: true # 혼합 정밀도 사용
 
 model:
-    backbone_wear: "convnext_tiny"  # 착용 이미지용 백본
-    backbone_prod: "convnext_tiny"  # 상품 이미지용 백본
-    embed_dim: 512
+    backbone_wear: "convnext_base"  # 착용 이미지용 백본
+    backbone_prod: "convnext_base"  # 상품 이미지용 백본
+    embed_dim: 1024
     checkpoint: "/workspace/train/checkpoints/visionary-monkey-18/best_model.pth.tar"
     resume: false
     image_size: 384
@@ -34,24 +34,24 @@ model:
     use_timm: false
 
 loss:
-    temperature: 0.07
-    hard_mining: false
+    temperature: 0.1
+    hard_mining: true
 
 memory_bank:
     enabled: false  # 메모리 뱅크 활성화
-    size: 8192 # 더 큰 사이즈로 설정
-    momentum: 0.99
-    start_epoch: 0 # 즉시 사용 시작
+    size: 4096 # 더 큰 사이즈로 설정
+    momentum: 0.90
+    start_epoch: 20
 
 optimizer:
     type: "AdamW"  # LARS 대신 AdamW 사용
     weight_decay: 1e-5
 
 augmentation:
-    color_jitter_strength: 0.6
+    color_jitter_strength: 0.3
     use_random_resize_crop: true
-    min_scale: 0.65
-    crop_ratio_range: [0.85, 1.15]
+    min_scale: 0.9
+    crop_ratio_range: [0.95, 1.05]
     use_random_erasing: true
     erasing_prob: 0.3
     use_gaussian_blur: true
@@ -61,7 +61,7 @@ wandb:
     enabled: true
     project_name: "fashion-supcon-a100"
     run_name: null # 자동 생성됨
-    tags: ["a100", "supcon", "single-model"]
+    tags: ["a100", "supcon", "two-tower-model"]
     # 상세 로깅 설정
     log_model: true # 모델 가중치를 WandB에 로깅
     log_gradients: true # 그라디언트 히스토그램 로깅

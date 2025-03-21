@@ -29,14 +29,14 @@ class ContrastiveFashionDataset(Dataset):
         self.mode = mode
         
         # config로부터 augmentation 강도 설정
-        jitter_strength = 0.4
-        min_scale = 0.85  # 기본값을 더 높게 설정 (0.7 -> 0.85)
+        jitter_strength = 0.2
+        min_scale = 0.9  # 기본값을 더 높게 설정 (0.7 -> 0.9)
         use_random_resize_crop = True
         crop_ratio_range = [0.95, 1.05]  # 기본 비율 범위 좁게 설정
         
         if config and 'augmentation' in config:
             jitter_strength = config['augmentation'].get('color_jitter_strength', 0.4)
-            min_scale = config['augmentation'].get('min_scale', 0.85)
+            min_scale = config['augmentation'].get('min_scale', 0.9)
             use_random_resize_crop = config['augmentation'].get('use_random_resize_crop', True)
             crop_ratio_range = config['augmentation'].get('crop_ratio_range', [0.95, 1.05])
 
@@ -47,7 +47,7 @@ class ContrastiveFashionDataset(Dataset):
                 wearing_transforms.append(
                     transforms.RandomResizedCrop(
                         image_size, 
-                        scale=(min_scale, 1.0),  # 최소 85% 이상의 원본 영역 유지
+                        scale=(min_scale, 1.0),  # 최소 90% 이상의 원본 영역 유지
                         ratio=crop_ratio_range   # 거의 원본 비율 유지
                     )
                 )
@@ -70,7 +70,7 @@ class ContrastiveFashionDataset(Dataset):
                 #         hue=jitter_strength/4)
                 # ], p=0.8),
                 # transforms.RandomGrayscale(p=0.2),
-                # transforms.GaussianBlur(kernel_size=int(0.1 * image_size)),
+                # transforms.GaussianBlur(kernel_size=int(0.1 * image_size) // 2 * 2 + 1),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                     std=[0.229, 0.224, 0.225]),
@@ -168,120 +168,3 @@ def collate_fn_supcon(batch):
     wearing_imgs = torch.stack(wearing_imgs, dim=0)
     product_imgs = torch.stack(product_imgs, dim=0)
     return wearing_imgs, product_imgs, product_codes
-
-class SimCLRFashionDataset(Dataset):
-    """
-    SimCLR 방식의 데이터셋입니다.
-    각 이미지에 두 가지 다른 augmentation을 적용하여 positive pair를 생성합니다.
-    레이블 정보는 사용하지 않는 비지도 학습 방식입니다.
-    """
-    def __init__(self, root_dir, metainfo_path=None, is_train=True, image_size=224, max_samples=-1):
-        super().__init__()
-        self.root_dir = root_dir
-        self.is_train = is_train
-        self.image_size = image_size
-        
-        # 강한 augmentation (두 view 모두에 다른 augmentation 적용)
-        self.transform = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            # transforms.RandomApply([
-            #     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-            # ], p=0.8),
-            # transforms.RandomGrayscale(p=0.2),
-            # transforms.RandomApply([
-            #     transforms.GaussianBlur((3, 3), (1.0, 2.0))
-            # ], p=0.5),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
-        ])
-        
-        # 평가를 위한 기본 transform
-        self.transform_val = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
-        ])
-        
-        # 이미지 경로 리스트 구성
-        self.samples = []
-        
-        # metainfo가 제공되는 경우
-        if metainfo_path:
-            with open(metainfo_path, 'r', encoding='utf-8') as f:
-                info_list = json.load(f)
-            
-            # 착용 이미지와 상품 이미지 모두 포함
-            for info in info_list:
-                # 착용 이미지 추가
-                wearing_filename = info.get("wearing", None)
-                if wearing_filename:
-                    wearing_path = os.path.join(root_dir, "wearing", wearing_filename)
-                    if os.path.exists(wearing_path):
-                        self.samples.append(wearing_path)
-                
-                # 상품 이미지 추가
-                product_categories = ["hat", "main_top", "inner_top", "bottom", "shoes"]
-                for cat in product_categories:
-                    product_code = info.get(cat, None)
-                    if product_code:
-                        product_path = os.path.join(root_dir, "product", f"{product_code}.jpg")
-                        if os.path.exists(product_path):
-                            self.samples.append(product_path)
-        
-        # metainfo가 없는 경우 (이미지 폴더 직접 탐색)
-        else:
-            for subdir in ["wearing", "product"]:
-                dir_path = os.path.join(root_dir, subdir)
-                if os.path.exists(dir_path):
-                    for filename in os.listdir(dir_path):
-                        if filename.endswith(('.jpg', '.jpeg', '.png')):
-                            img_path = os.path.join(dir_path, filename)
-                            self.samples.append(img_path)
-        
-        # 샘플 수 제한 (옵션)
-        if max_samples > 0 and len(self.samples) > max_samples:
-            random.shuffle(self.samples)
-            self.samples = self.samples[:max_samples]
-            print(f"Using {max_samples} samples out of the full dataset")
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, index):
-        img_path = self.samples[index]
-        image = Image.open(img_path).convert("RGB")
-        
-        if self.is_train:
-            # 같은 이미지에 두 가지 다른 augmentation 적용
-            aug_img1 = self.transform(image)
-            aug_img2 = self.transform(image)
-            return aug_img1, aug_img2, img_path
-        else:
-            # 평가 시에는 기본 transform만 적용
-            return self.transform_val(image), img_path
-
-def collate_fn_simclr(batch):
-    """
-    SimCLR 방식의 collate 함수.
-    batch: list of tuples: (aug_img1, aug_img2, img_path)
-    반환:
-      aug_imgs1: (B, C, H, W) - 첫 번째 augmentation 적용된 이미지들
-      aug_imgs2: (B, C, H, W) - 두 번째 augmentation 적용된 이미지들
-      img_paths: list of length B (이미지 경로)
-    """
-    aug_imgs1 = []
-    aug_imgs2 = []
-    img_paths = []
-    
-    for aug_img1, aug_img2, img_path in batch:
-        aug_imgs1.append(aug_img1)
-        aug_imgs2.append(aug_img2)
-        img_paths.append(img_path)
-    
-    aug_imgs1 = torch.stack(aug_imgs1, dim=0)
-    aug_imgs2 = torch.stack(aug_imgs2, dim=0)
-    
-    return aug_imgs1, aug_imgs2, img_paths
