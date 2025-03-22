@@ -9,7 +9,7 @@ data:
 
 training:
     epochs: 100 # 43보다 충분히 큰 값으로 설정
-    batch_size: 1024
+    batch_size: 768
     learning_rate: 0.0001    
     num_workers: 6 # vCPU 8개에 맞춤
     gradient_accumulation_steps: 1
@@ -24,14 +24,15 @@ training:
     mixed_precision: true # 혼합 정밀도 사용
 
 model:
-    backbone_wear: "convnext_base"  # 착용 이미지용 백본
-    backbone_prod: "convnext_base"  # 상품 이미지용 백본
+    backbone_wear: "facebook/convnextv2-base-22k-384"  # 착용 이미지용 백본
+    backbone_prod: "facebook/convnextv2-base-22k-384"  # 상품 이미지용 백본
     embed_dim: 1024
     checkpoint: "/workspace/train/checkpoints/visionary-monkey-18/best_model.pth.tar"
     resume: false
     image_size: 384
     in_channels: 3
     use_timm: false
+    use_hf: true  # 허깅페이스 모델 사용 활성화
 
 loss:
     temperature: 0.1

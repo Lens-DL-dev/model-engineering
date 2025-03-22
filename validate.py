@@ -43,21 +43,33 @@ def main():
     # Device 설정
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 모델 설정
+    # 모델 설정 - Hugging Face 모델 지원 추가
     model = TwoTowerModel(
         backbone_wear=config['model'].get('backbone_wear', 'convnext_tiny'),
         backbone_prod=config['model'].get('backbone_prod', 'convnext_tiny'),
         embed_dim=config['model'].get('embed_dim', 512),
-        use_timm=config['model'].get('use_timm', False)
+        use_timm=config['model'].get('use_timm', False),
+        use_hf=config['model'].get('use_hf', False)  # Hugging Face 모델 사용 옵션 추가
     ).to(device)
+    
+    # 모델 아키텍처 정보 출력
+    backbone_wear = config['model'].get('backbone_wear', 'convnext_tiny')
+    backbone_prod = config['model'].get('backbone_prod', 'convnext_tiny')
+    use_hf = config['model'].get('use_hf', False)
+    print(f"Model architecture: Two Tower ({backbone_wear}, {backbone_prod})")
+    print(f"Using Hugging Face models: {use_hf}")
     
     # EMA 적용
     ema = ModelEmaV2(model, decay=0.999)
     
     # Checkpoint 로드
     load_checkpoint(model, args.checkpoint)
-    if os.path.exists(args.checkpoint.replace("best_model.pth.tar", "best_model_ema.pth.tar")):
-        load_checkpoint(ema.module, args.checkpoint.replace("best_model.pth.tar", "best_model_ema.pth.tar"))
+    ema_path = args.checkpoint.replace("best_model.pth.tar", "best_model_ema.pth.tar")
+    if os.path.exists(ema_path):
+        print(f"Loading EMA model from {ema_path}")
+        load_checkpoint(ema.module, ema_path)
+    else:
+        print("EMA model checkpoint not found. Using regular model for EMA evaluation.")
     
     # Dataset / Dataloader 설정
     val_dataset = ContrastiveFashionDataset(
@@ -79,6 +91,8 @@ def main():
         pin_memory=True
     )
     
+    print(f"Validation dataset size: {len(val_dataset)}")
+    
     # 모델 평가
     def evaluate(model, name="model"):
         model.eval()
@@ -91,6 +105,7 @@ def main():
                 val_wearing = val_wearing.to(device)
                 val_product = val_product.to(device)
                 
+                # 모델을 통해 임베딩 추출
                 emb_wearing, emb_product = model(val_wearing, val_product)
                 all_wearing_emb.append(emb_wearing)
                 all_product_emb.append(emb_product)
@@ -107,12 +122,21 @@ def main():
                 f"val/{name}_top5": topk_acc[5],
                 f"val/{name}_top10": topk_acc[10]
             })
+        
+        return topk_acc
     
     # 기본 모델 평가
-    evaluate(model, name="model")
+    print("\n===== Evaluating Regular Model =====")
+    model_acc = evaluate(model, name="model")
     
     # EMA 모델 평가
-    evaluate(ema.module, name="ema")
+    print("\n===== Evaluating EMA Model =====")
+    ema_acc = evaluate(ema.module, name="ema")
+    
+    # 결과 요약
+    print("\n===== Validation Results Summary =====")
+    print(f"Regular Model - Top1: {model_acc[1]:.2f}%, Top5: {model_acc[5]:.2f}%, Top10: {model_acc[10]:.2f}%")
+    print(f"EMA Model - Top1: {ema_acc[1]:.2f}%, Top5: {ema_acc[5]:.2f}%, Top10: {ema_acc[10]:.2f}%")
     
     if use_wandb:
         wandb.finish()

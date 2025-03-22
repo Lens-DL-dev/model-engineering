@@ -145,6 +145,7 @@ def main():
     image_size = config['model'].get('image_size', 384)
     in_channels = config['model'].get('in_channels', 3)
     use_timm = config['model'].get('use_timm', False)
+    use_hf = config['model'].get('use_hf', False)
     
     # 메모리 뱅크 설정
     memory_bank_config = config.get('memory_bank', {})
@@ -222,7 +223,8 @@ def main():
         backbone_prod=backbone_prod,
         pretrained=True,
         embed_dim=embed_dim,
-        use_timm=use_timm
+        use_timm=use_timm,
+        use_hf=use_hf
     ).to(device)
     
     ema = ModelEmaV2(model, decay=0.999)

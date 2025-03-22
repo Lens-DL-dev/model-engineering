@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 import timm
+from transformers import AutoImageProcessor, AutoModel  # 허깅페이스 transformers 라이브러리 추가
 
 class ProjectionHead(nn.Module):
     def __init__(self, in_dim, embed_dim):
@@ -31,15 +32,44 @@ class ConvNextModel(nn.Module):
     
     A100 80GB GPU에 최적화된 버전으로, 더 다양한 백본 옵션을 지원합니다.
     """
-    def __init__(self, backbone="convnext_tiny", pretrained=True, embed_dim=1024, use_timm=False):
+    def __init__(self, backbone="convnext_tiny", pretrained=True, embed_dim=1024, use_timm=False, use_hf=False):
         super().__init__()
         self.backbone_name = backbone
         self.embed_dim = embed_dim
         
+        # 허깅페이스 모델 사용 여부
+        self.use_hf = use_hf
         # timm 라이브러리 사용 여부 (더 다양한 모델에 접근 가능)
-        self.use_timm = use_timm
+        self.use_timm = use_timm and not use_hf  # 허깅페이스 모델 사용 시 timm은 무시
         
-        if use_timm:
+        if use_hf:
+            # 허깅페이스 transformers 라이브러리 사용
+            self.encoder = AutoModel.from_pretrained(backbone)
+            
+            # ConvNextV2 모델의 경우 출력 특성 차원 설정
+            if 'convnextv2-base' in backbone:
+                in_dim = 1024
+            elif 'convnextv2-large' in backbone:
+                in_dim = 1536
+            elif 'convnextv2-huge' in backbone:
+                in_dim = 2048
+            elif 'convnextv2-tiny' in backbone:
+                in_dim = 768
+            elif 'convnextv2-small' in backbone:
+                in_dim = 768
+            else:
+                # 기타 허깅페이스 모델의 경우
+                # 설정 파일에서 차원 정보 가져오기
+                try:
+                    in_dim = self.encoder.config.hidden_sizes[-1]
+                except:
+                    in_dim = self.encoder.config.hidden_size
+            
+            # 허깅페이스 모델 출력을 처리하기 위한 풀링 및 플래튼 레이어 추가
+            self.pooling = nn.AdaptiveAvgPool2d(1)
+            self.flatten = nn.Flatten()
+        
+        elif use_timm:
             # timm 라이브러리 사용 - 더 많은 백본 옵션 지원
             self.encoder = timm.create_model(backbone, pretrained=pretrained, num_classes=0, global_pool='avg')
             if 'convnext' in backbone:
@@ -115,12 +145,37 @@ class ConvNextModel(nn.Module):
         if self.use_checkpoint and self.training:
             # 대규모 모델 학습 시 메모리 효율성을 위한 그라디언트 체크포인팅
             from torch.utils.checkpoint import checkpoint
-            features = checkpoint(self.encoder, x)
+            if self.use_hf:
+                # Hugging Face 모델 체크포인팅
+                features = checkpoint(self._forward_features, x)
+            else:
+                features = checkpoint(self.encoder, x)
         else:
-            features = self.encoder(x)          # [B, in_dim]
+            if self.use_hf:
+                # Hugging Face 모델 forward
+                features = self._forward_features(x)
+            else:
+                features = self.encoder(x)  # [B, in_dim]
         
         embeddings = self.projection_head(features)  # [B, embed_dim]
         return embeddings
+    
+    def _forward_features(self, x):
+        """허깅페이스 모델의 특성 추출 처리"""
+        if self.use_hf:
+            # 허깅페이스 ConvNeXt 모델은 last_hidden_state가 [B, C, H, W] 형태로 출력
+            outputs = self.encoder(pixel_values=x)
+            
+            # last_hidden_state는 [B, C, H, W] 형태
+            features = outputs.last_hidden_state
+            
+            # torchvision 모델과 유사하게 처리: Global Average Pooling 후 Flatten
+            features = self.pooling(features)
+            features = self.flatten(features)
+            
+            return features
+        else:
+            return self.encoder(x)
     
     def freeze_backbone(self, freeze=True):
         """백본 모델을 고정하고 projection head만 학습하는 옵션"""
@@ -163,12 +218,12 @@ class TwoTowerModel(nn.Module):
     입력 이미지 도메인에 특화된 임베딩을 학습할 수 있습니다.
     """
     def __init__(self, backbone_wear="convnext_tiny", backbone_prod="convnext_tiny",
-                 pretrained=True, embed_dim=512, use_timm=False):
+                 pretrained=True, embed_dim=512, use_timm=False, use_hf=False):
         super().__init__()
         self.tower_wear = ConvNextModel(backbone=backbone_wear, pretrained=pretrained, 
-                                        embed_dim=embed_dim, use_timm=use_timm)
+                                        embed_dim=embed_dim, use_timm=use_timm, use_hf=use_hf)
         self.tower_prod = ConvNextModel(backbone=backbone_prod, pretrained=pretrained, 
-                                        embed_dim=embed_dim, use_timm=use_timm)
+                                        embed_dim=embed_dim, use_timm=use_timm, use_hf=use_hf)
 
     def forward(self, wear_img=None, prod_img=None):
         """
